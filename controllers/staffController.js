@@ -1,4 +1,5 @@
 const asyncHandler           = require('express-async-handler');
+const mongoose               = require('mongoose');
 const Issue                  = require('../models/Issue');
 const Comment                = require('../models/Comment');
 const { notifyStatusChange } = require('../utils/notify');
@@ -40,6 +41,11 @@ const getAssignedIssues = asyncHandler(async (req, res) => {
 const updateProgress = asyncHandler(async (req, res) => {
   const { note } = req.body;
   const staffId  = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
 
   const issue = await Issue.findById(req.params.id);
 
@@ -92,6 +98,11 @@ const updateProgress = asyncHandler(async (req, res) => {
 // ─── @access  Private, staff
 const uploadResolutionProof = asyncHandler(async (req, res) => {
   const staffId = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
 
   const issue = await Issue.findById(req.params.id);
 

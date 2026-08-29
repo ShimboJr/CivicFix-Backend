@@ -378,6 +378,11 @@ const assignIssue = asyncHandler(async (req, res) => {
     throw new Error('A valid staffId is required');
   }
 
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
+
   const [issue, staffUser] = await Promise.all([
     Issue.findById(req.params.id),
     User.findById(staffId),
@@ -421,6 +426,11 @@ const updateIssueStatus = asyncHandler(async (req, res) => {
   if (!status || !VALID_STATUSES.includes(status)) {
     res.status(400);
     throw new Error(`Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}`);
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    res.status(404);
+    throw new Error('Issue not found');
   }
 
   const issue = await Issue.findById(req.params.id);

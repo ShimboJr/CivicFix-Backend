@@ -1,6 +1,8 @@
-const asyncHandler = require('express-async-handler');
-const Issue        = require('../models/Issue');
-const Comment      = require('../models/Comment');
+const asyncHandler   = require('express-async-handler');
+const mongoose       = require('mongoose');
+const Issue          = require('../models/Issue');
+const Comment        = require('../models/Comment');
+const Notification   = require('../models/Notification');
 
 // ─── @desc    Create a new issue
 // ─── @route   POST /api/issues
@@ -113,6 +115,13 @@ const getIssues = asyncHandler(async (req, res) => {
 // ─── @route   GET /api/issues/:id
 // ─── @access  Public
 const getIssueById = asyncHandler(async (req, res) => {
+  // Validate the id before hitting Mongoose to avoid a CastError
+  // (e.g. when id is literally "null", "undefined", or a malformed string).
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
+
   const issue = await Issue.findById(req.params.id)
     .populate('category',   'name icon')
     .populate('reportedBy', 'name email location')
@@ -120,7 +129,7 @@ const getIssueById = asyncHandler(async (req, res) => {
 
   if (!issue) {
     res.status(404);
-    throw new Error(`Issue not found with id: ${req.params.id}`);
+    throw new Error('Issue not found');
   }
 
   // Fetch associated comments separately for clear population control
@@ -190,8 +199,18 @@ const deleteIssue = asyncHandler(async (req, res) => {
     throw new Error('Issue not found');
   }
 
-  // Also clean up any associated comments
-  await Comment.deleteMany({ issue: issue._id });
+  // Best-effort cleanup of dependent documents.
+  // Wrapped in try/catch so a cleanup failure never blocks the actual delete.
+  try {
+    await Promise.all([
+      Comment.deleteMany(     { issue: issue._id }),
+      Notification.deleteMany({ issue: issue._id }),
+    ]);
+  } catch (cleanupErr) {
+    // Log but do not rethrow — the issue deletion should still complete.
+    console.error('[deleteIssue] Cleanup error (non-fatal):', cleanupErr.message);
+  }
+
   await issue.deleteOne();
 
   res.status(200).json({ message: `Issue ${issue.issueId} deleted successfully` });
