@@ -41,5 +41,11 @@ const upload = multer({
   },
 });
 
-// Export ready-to-use middleware: up to 5 images under the field name "images"
-module.exports = upload.array('images', 5);
+// ─── Exports ──────────────────────────────────────────────────────────────────
+// `upload` is the raw multer instance so callers can pick the variant they need:
+//   • upload.array('images', 5)  — issue report (multiple images)
+//   • upload.single('afterImage') — staff resolution proof (one image)
+module.exports = {
+  uploadArray:  upload.array('images', 5),
+  uploadSingle: upload.single('afterImage'),
+};

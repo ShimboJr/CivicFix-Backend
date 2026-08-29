@@ -14,7 +14,7 @@ const {
 } = require('../controllers/issueController');
 
 const { protect, authorize } = require('../middleware/authMiddleware');
-const upload                 = require('../middleware/uploadMiddleware');
+const { uploadArray }        = require('../middleware/uploadMiddleware');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IMPORTANT: specific named paths (e.g. /my-issues) MUST be declared BEFORE
@@ -29,7 +29,7 @@ router.get('/my-issues', protect, getMyIssues);
 router
   .route('/')
   .get(getIssues)
-  .post(protect, upload, createIssue);
+  .post(protect, uploadArray, createIssue);
 
 // GET    /api/issues/:id       — single issue detail (public)
 // PUT    /api/issues/:id       — update issue (reporter while Pending, or admin)
