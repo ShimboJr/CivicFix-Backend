@@ -36,6 +36,19 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+
+    // ── Password reset ─────────────────────────────────────────────────────────
+    // The raw token is NEVER stored — only its sha256 hash is persisted here so
+    // that a database breach cannot be used to reset accounts.
+    // Both fields are select:false so they are omitted from all normal queries.
+    resetPasswordToken: {
+      type:   String,
+      select: false,
+    },
+    resetPasswordExpire: {
+      type:   Date,
+      select: false,
+    },
   },
   {
     timestamps: true, // Adds createdAt & updatedAt automatically

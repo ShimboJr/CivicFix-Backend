@@ -1,6 +1,8 @@
-const asyncHandler = require('express-async-handler');
+const crypto        = require('crypto');
+const asyncHandler  = require('express-async-handler');
 const User          = require('../models/User');
 const generateToken = require('../utils/generateToken');
+const { transporter, FROM_ADDRESS } = require('../config/email');
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 /**
@@ -104,4 +106,128 @@ const logoutUser = asyncHandler(async (_req, res) => {
   res.status(200).json({ message: 'Logged out successfully' });
 });
 
-module.exports = { registerUser, loginUser, getMe, logoutUser };
+// ─── @desc    Request a password-reset email
+// ─── @route   POST /api/auth/forgot-password
+// ─── @access  Public
+const forgotPassword = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    res.status(400);
+    throw new Error('Please provide your email address');
+  }
+
+  // Generic response — never reveal whether this email is registered
+  const GENERIC_MSG =
+    'If an account exists for that email, a password-reset link has been sent.';
+
+  const user = await User.findOne({ email: email.toLowerCase() })
+    .select('+resetPasswordToken +resetPasswordExpire');
+
+  if (!user) {
+    // No account — respond generically so we don't leak registered emails
+    return res.status(200).json({ message: GENERIC_MSG });
+  }
+
+  // Generate a cryptographically random raw token
+  const rawToken  = crypto.randomBytes(32).toString('hex');
+  const hashToken = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+  user.resetPasswordToken  = hashToken;
+  user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutes
+  await user.save({ validateBeforeSave: false });
+
+  // Build the reset link that goes into the email
+  const clientUrl  = process.env.CLIENT_URL || 'http://localhost:5173';
+  const resetUrl   = `${clientUrl}/reset-password/${rawToken}`;
+
+  // Send email — reuse the shared transporter from config/email.js
+  try {
+    const info = await transporter.sendMail({
+      from:    FROM_ADDRESS,
+      to:      user.email,
+      subject: 'CivicFix — Reset your password',
+      html: `
+        <div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+          <h2 style="color:#2563eb">Reset your CivicFix password</h2>
+          <p>Hi ${user.name},</p>
+          <p>We received a request to reset the password on your account.
+             Click the button below to choose a new one.</p>
+          <p style="margin:1.5rem 0">
+            <a href="${resetUrl}"
+               style="background:#2563eb;color:#fff;padding:0.65rem 1.4rem;
+                      border-radius:6px;text-decoration:none;font-weight:600">
+              Reset my password
+            </a>
+          </p>
+          <p style="font-size:0.85rem;color:#6b7280">
+            This link expires in <strong>10 minutes</strong>.<br>
+            If you didn't request a password reset, you can safely ignore this email.
+          </p>
+          <hr style="border:none;border-top:1px solid #e5e7eb;margin:1.5rem 0">
+          <p style="font-size:0.8rem;color:#9ca3af">
+            Or copy and paste this URL into your browser:<br>
+            <a href="${resetUrl}" style="color:#2563eb;word-break:break-all">${resetUrl}</a>
+          </p>
+        </div>
+      `,
+    });
+
+    // In development, log the Ethereal preview URL so the team can inspect it
+    if (process.env.NODE_ENV !== 'production' && info.messageId) {
+      const nodemailer = require('nodemailer');
+      console.log('[CivicFix] Password-reset email preview:', nodemailer.getTestMessageUrl(info));
+    }
+  } catch (emailErr) {
+    // Roll back the token so a failed send doesn't leave a dangling valid token
+    console.error('[CivicFix] Failed to send reset email:', emailErr.message);
+    user.resetPasswordToken  = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save({ validateBeforeSave: false });
+    // Still return the generic success message — don't expose the SMTP failure
+  }
+
+  res.status(200).json({ message: GENERIC_MSG });
+});
+
+// ─── @desc    Reset password via token from the email link
+// ─── @route   PUT /api/auth/reset-password/:token
+// ─── @access  Public
+const resetPassword = asyncHandler(async (req, res) => {
+  const { password } = req.body;
+  if (!password) {
+    res.status(400);
+    throw new Error('Please provide a new password');
+  }
+  if (password.length < 6) {
+    res.status(400);
+    throw new Error('Password must be at least 6 characters');
+  }
+
+  // Hash the incoming raw token to compare against the stored hash
+  const hashToken = crypto
+    .createHash('sha256')
+    .update(req.params.token)
+    .digest('hex');
+
+  // Find a user with a matching, non-expired token
+  const user = await User.findOne({
+    resetPasswordToken:  hashToken,
+    resetPasswordExpire: { $gt: Date.now() },
+  }).select('+password +resetPasswordToken +resetPasswordExpire');
+
+  if (!user) {
+    res.status(400);
+    throw new Error('This password reset link is invalid or has expired. Please request a new one.');
+  }
+
+  // Set the new password — the pre-save hook will hash it automatically
+  user.password            = password;
+  user.resetPasswordToken  = undefined;
+  user.resetPasswordExpire = undefined;
+  await user.save();
+
+  // Log the user straight in by returning a fresh token
+  authResponse(res, 200, user);
+});
+
+module.exports = { registerUser, loginUser, getMe, logoutUser, forgotPassword, resetPassword };
