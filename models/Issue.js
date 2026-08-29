@@ -95,13 +95,24 @@ issueSchema.pre('save', async function (next) {
 
   const year = new Date().getFullYear();
 
-  // Count how many issues exist for this year to determine the next sequence
-  const count = await mongoose
+  // ── Why NOT countDocuments() ───────────────────────────────────────────────
+  // Using count+1 breaks the moment any issue is deleted: the count drops,
+  // making the next "new" sequence collide with an existing ID (E11000).
+  //
+  // ── Fix: find the current maximum sequence and increment from it ───────────
+  // Zero-padding to 5 digits means lexicographic sort === numeric sort, so
+  // sorting by issueId descending gives us the highest sequence with no regex
+  // arithmetic needed for comparison — only for the final +1.
+  const last = await mongoose
     .model('Issue')
-    .countDocuments({ issueId: new RegExp(`^CF-${year}-`) });
+    .findOne({ issueId: new RegExp(`^CF-${year}-`) })
+    .sort({ issueId: -1 })
+    .select('issueId')
+    .lean();
 
-  // Zero-pad to 5 digits: CF-2025-00001
-  const sequence = String(count + 1).padStart(5, '0');
+  // Parse the trailing 5-digit sequence from the last ID, or start at 0
+  const lastSeq  = last ? parseInt(last.issueId.split('-')[2], 10) : 0;
+  const sequence = String(lastSeq + 1).padStart(5, '0');
 
   this.issueId = `CF-${year}-${sequence}`;
 

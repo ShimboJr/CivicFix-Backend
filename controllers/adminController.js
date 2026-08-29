@@ -49,15 +49,25 @@ const getDashboardStats = asyncHandler(async (_req, res) => {
 });
 
 // ─── @desc    Analytics data for charts
-// ─── @route   GET /api/admin/analytics
+// ─── @route   GET /api/admin/analytics?months=12
 // ─── @access  Private, admin
-const getAnalytics = asyncHandler(async (_req, res) => {
-  const sixMonthsAgo = new Date();
-  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+const getAnalytics = asyncHandler(async (req, res) => {
+  // Accept ?months query param (default 12).  Clamp to sane bounds.
+  const months     = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 1), 60);
+  const windowStart = new Date();
+  windowStart.setMonth(windowStart.getMonth() - months);
 
-  const [byCategory, resolutionData, byMonth, topLocations] = await Promise.all([
+  const [
+    byCategory,
+    resolutionData,
+    byMonth,
+    topLocations,
+    problemAreas,
+    resolutionTimeOverall,
+    resolutionTimeByCategory,
+  ] = await Promise.all([
 
-    // Issues grouped by category — for bar/pie chart
+    // ── Issues grouped by category — for bar/pie chart ─────────────────────
     Issue.aggregate([
       {
         $lookup: {
@@ -67,12 +77,12 @@ const getAnalytics = asyncHandler(async (_req, res) => {
           as:           'cat',
         },
       },
-      { $unwind: { path: '$cat', preserveNullAndEmpty: false } },
+      { $unwind: { path: '$cat', preserveNullAndEmptyArrays: false } },
       { $group: { _id: '$cat.name', icon: { $first: '$cat.icon' }, count: { $sum: 1 } } },
       { $sort:  { count: -1 } },
     ]),
 
-    // Resolved vs total for resolution rate
+    // ── Resolved vs total — for resolution rate ────────────────────────────
     Issue.aggregate([
       {
         $group: {
@@ -83,9 +93,9 @@ const getAnalytics = asyncHandler(async (_req, res) => {
       },
     ]),
 
-    // Issue counts grouped by month — last 6 months
+    // ── Issue counts grouped by month — last N months (param-driven) ───────
     Issue.aggregate([
-      { $match: { createdAt: { $gte: sixMonthsAgo } } },
+      { $match: { createdAt: { $gte: windowStart } } },
       {
         $group: {
           _id: {
@@ -98,12 +108,101 @@ const getAnalytics = asyncHandler(async (_req, res) => {
       { $sort: { '_id.year': 1, '_id.month': 1 } },
     ]),
 
-    // Top 5 locations by report volume
+    // ── Top 5 locations by raw address (legacy — kept for existing UI) ─────
     Issue.aggregate([
       { $group: { _id: '$location.address', count: { $sum: 1 } } },
       { $sort:  { count: -1 } },
       { $limit: 5 },
       { $project: { location: '$_id', count: 1, _id: 0 } },
+    ]),
+
+    // ── Problem areas — coordinate-bucketed top 10 ─────────────────────────
+    // Round lat/lng to 3 decimal places (≈ 100 m grid cell) so nearby reports
+    // for the same real-world spot are grouped even when the raw address strings
+    // differ.  For each bucket we also capture the address of the earliest
+    // report as a human-readable label.
+    Issue.aggregate([
+      // Drop any issue that has no coordinates
+      {
+        $match: {
+          'location.latitude':  { $exists: true, $ne: null },
+          'location.longitude': { $exists: true, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            lat: { $round: ['$location.latitude',  3] },
+            lng: { $round: ['$location.longitude', 3] },
+          },
+          count:           { $sum: 1 },
+          // $first over createdAt ascending gives the earliest-reported address
+          representativeAddress: { $first: '$location.address' },
+          earliestDate:          { $min:   '$createdAt' },
+        },
+      },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+      {
+        $project: {
+          _id:     0,
+          lat:     '$_id.lat',
+          lng:     '$_id.lng',
+          address: '$representativeAddress',
+          count:   1,
+        },
+      },
+    ]),
+
+    // ── Average resolution time — overall (hours) ──────────────────────────
+    // For Resolved issues, subtract createdAt from updatedAt (ms), take the
+    // average, then convert ms → hours.
+    Issue.aggregate([
+      { $match: { status: 'Resolved' } },
+      {
+        $group: {
+          _id: null,
+          avgMs: {
+            $avg: { $subtract: ['$updatedAt', '$createdAt'] },
+          },
+        },
+      },
+      {
+        $project: {
+          _id:     0,
+          avgHours: { $round: [{ $divide: ['$avgMs', 3_600_000] }, 1] },
+        },
+      },
+    ]),
+
+    // ── Average resolution time — per category ─────────────────────────────
+    Issue.aggregate([
+      { $match: { status: 'Resolved' } },
+      {
+        $lookup: {
+          from:         'categories',
+          localField:   'category',
+          foreignField: '_id',
+          as:           'cat',
+        },
+      },
+      { $unwind: { path: '$cat', preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id:   { $ifNull: ['$cat.name', 'Uncategorised'] },
+          avgMs: { $avg: { $subtract: ['$updatedAt', '$createdAt'] } },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          _id:      0,
+          category: '$_id',
+          avgHours: { $round: [{ $divide: ['$avgMs', 3_600_000] }, 1] },
+          count:    1,
+        },
+      },
+      { $sort: { avgHours: -1 } },
     ]),
   ]);
 
@@ -111,12 +210,21 @@ const getAnalytics = asyncHandler(async (_req, res) => {
   const resolutionRate = total > 0 ? ((resolved / total) * 100).toFixed(1) : '0.0';
 
   res.status(200).json({
+    // ── Existing fields (unchanged) ────────────────────────────────────────
     byCategory,
     resolutionRate: `${resolutionRate}%`,
     byMonth,
     topLocations,
+    // ── New fields ────────────────────────────────────────────────────────
+    months,          // echo back so the client knows the window it received
+    problemAreas,
+    avgResolutionTime: {
+      overall:     resolutionTimeOverall[0]?.avgHours ?? null,
+      byCategory:  resolutionTimeByCategory,
+    },
   });
 });
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  USER MANAGEMENT
