@@ -29,12 +29,13 @@ if (process.env.NODE_ENV === 'development') {
 // updated to reference the Cloudinary URL stored in the database instead.
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
-app.use('/api/auth', require('./routes/authRoutes'));
+app.use('/api/auth',          require('./routes/authRoutes'));
 // TODO: mount user routes      → app.use('/api/users',      require('./routes/userRoutes'));
-app.use('/api/admin',  require('./routes/adminRoutes'));
-app.use('/api/staff',  require('./routes/staffRoutes'));
-app.use('/api/issues', require('./routes/issueRoutes'));
-app.use('/api/categories', require('./routes/categoryRoutes'));
+app.use('/api/admin',          require('./routes/adminRoutes'));
+app.use('/api/staff',          require('./routes/staffRoutes'));
+app.use('/api/issues',         require('./routes/issueRoutes'));
+app.use('/api/categories',     require('./routes/categoryRoutes'));
+app.use('/api/notifications',  require('./routes/notificationRoutes'));
 // TODO: mount comment routes   → app.use('/api/comments',   require('./routes/commentRoutes'));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────

@@ -1,9 +1,10 @@
-const asyncHandler = require('express-async-handler');
-const mongoose     = require('mongoose');
-const Issue        = require('../models/Issue');
-const User         = require('../models/User');
-const Category     = require('../models/Category');
-const Comment      = require('../models/Comment');
+const asyncHandler        = require('express-async-handler');
+const mongoose            = require('mongoose');
+const Issue               = require('../models/Issue');
+const User                = require('../models/User');
+const Category            = require('../models/Category');
+const Comment             = require('../models/Comment');
+const { notifyStatusChange } = require('../utils/notify');
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  DASHBOARD & ANALYTICS
@@ -287,6 +288,9 @@ const assignIssue = asyncHandler(async (req, res) => {
   issue.status     = 'Assigned';
   await issue.save();
 
+  // Notify the reporter that their issue has been assigned
+  await notifyStatusChange(issue._id, issue.reportedBy, 'Assigned');
+
   await issue.populate([
     { path: 'category',   select: 'name icon' },
     { path: 'reportedBy', select: 'name email' },
@@ -327,6 +331,9 @@ const updateIssueStatus = asyncHandler(async (req, res) => {
   }
 
   const updated = await issue.save();
+
+  // Notify the reporter of every admin-driven status change (including Rejected)
+  await notifyStatusChange(updated._id, updated.reportedBy, status);
 
   await updated.populate([
     { path: 'category',   select: 'name icon' },

@@ -1,6 +1,7 @@
-const asyncHandler = require('express-async-handler');
-const Issue        = require('../models/Issue');
-const Comment      = require('../models/Comment');
+const asyncHandler           = require('express-async-handler');
+const Issue                  = require('../models/Issue');
+const Comment                = require('../models/Comment');
+const { notifyStatusChange } = require('../utils/notify');
 
 // ─── Allowed status transitions for staff members ─────────────────────────────
 // Staff can only move issues forward through their section of the workflow.
@@ -64,6 +65,9 @@ const updateProgress = asyncHandler(async (req, res) => {
 
   issue.status = nextStatus;
   await issue.save();
+
+  // Notify the original reporter of the progress update
+  await notifyStatusChange(issue._id, issue.reportedBy, nextStatus);
 
   // If a note was provided, post it as a Comment so residents see it in-thread
   if (note && note.trim()) {
