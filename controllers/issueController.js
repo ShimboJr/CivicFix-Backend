@@ -25,8 +25,9 @@ const createIssue = asyncHandler(async (req, res) => {
     throw new Error('Please provide title, description, category, and location.address');
   }
 
-  // Map each uploaded file to its server-relative URL path
-  const images = req.files ? req.files.map((f) => `/uploads/${f.filename}`) : [];
+  // Map each uploaded file to its Cloudinary URL
+  // multer-storage-cloudinary places the full HTTPS URL on f.path
+  const images = req.files ? req.files.map((f) => f.path) : [];
 
   const issue = await Issue.create({
     title,

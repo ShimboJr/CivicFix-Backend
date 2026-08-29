@@ -23,7 +23,10 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // ─── Static Folder (uploaded images) ─────────────────────────────────────────
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Removed: app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
+// Images are now stored on Cloudinary — there are no local files to serve.
+// If any other feature still relied on this static route, it will need to be
+// updated to reference the Cloudinary URL stored in the database instead.
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
 app.use('/api/auth', require('./routes/authRoutes'));

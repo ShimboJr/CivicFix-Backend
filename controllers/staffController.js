@@ -106,7 +106,8 @@ const uploadResolutionProof = asyncHandler(async (req, res) => {
     throw new Error('No image file uploaded — include an image under the "afterImage" field');
   }
 
-  const afterImagePath = `/uploads/${req.file.filename}`;
+  // req.file.path is now the full Cloudinary HTTPS URL set by multer-storage-cloudinary
+  const afterImagePath = req.file.path;
 
   // Mirror the first issue image to beforeImage if not already set
   // so both sides of the before/after comparison are always available

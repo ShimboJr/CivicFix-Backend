@@ -1,28 +1,17 @@
-const multer = require('multer');
-const path   = require('path');
-const fs     = require('fs');
+const multer                  = require('multer');
+const { CloudinaryStorage }   = require('multer-storage-cloudinary');
+const cloudinary              = require('../config/cloudinary');
 
-// ─── Ensure uploads directory exists ─────────────────────────────────────────
-const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
-
-// ─── Storage Engine ───────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, UPLOAD_DIR);
-  },
-
-  filename: (_req, file, cb) => {
-    // Sanitize original filename: replace spaces/special chars with hyphens
-    const sanitized = file.originalname
-      .toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/[^a-z0-9.\-]/g, '');
-
-    const uniqueName = `${Date.now()}-${sanitized}`;
-    cb(null, uniqueName);
+// ─── Storage Engine (Cloudinary) ──────────────────────────────────────────────
+// multer-storage-cloudinary sets `req.files[i].path` to the full Cloudinary
+// HTTPS URL after upload — the same property name Multer used for local paths —
+// so every controller that was already reading `req.file.path` / `req.files[i].path`
+// receives the Cloudinary URL with zero changes required.
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder:         'civicfix/issues',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
   },
 });
 
