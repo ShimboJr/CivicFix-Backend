@@ -15,6 +15,10 @@ const {
 
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { uploadArray }        = require('../middleware/uploadMiddleware');
+const {
+  handleValidationErrors,
+  createIssueValidationRules,
+} = require('../middleware/validators');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IMPORTANT: specific named paths (e.g. /my-issues) MUST be declared BEFORE
@@ -25,11 +29,13 @@ const { uploadArray }        = require('../middleware/uploadMiddleware');
 router.get('/my-issues', protect, getMyIssues);
 
 // GET  /api/issues             — public, filterable, paginated
-// POST /api/issues             — create issue (authenticated + file upload)
+// POST /api/issues             — create issue (authenticated + validation + file upload)
+// Validation intentionally runs BEFORE uploadArray: an invalid request is
+// rejected here without ever starting a Cloudinary upload.
 router
   .route('/')
   .get(getIssues)
-  .post(protect, uploadArray, createIssue);
+  .post(protect, createIssueValidationRules, handleValidationErrors, uploadArray, createIssue);
 
 // GET    /api/issues/:id       — single issue detail (public)
 // PUT    /api/issues/:id       — update issue (reporter while Pending, or admin)

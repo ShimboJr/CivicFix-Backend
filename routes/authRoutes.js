@@ -12,10 +12,15 @@ const {
 
 const { protect } = require('../middleware/authMiddleware');
 const { loginLimiter, forgotPasswordLimiter } = require('../middleware/rateLimiter');
+const {
+  handleValidationErrors,
+  registerValidationRules,
+  loginValidationRules,
+} = require('../middleware/validators');
 
 // ─── Public routes ────────────────────────────────────────────────────────────
-router.post('/register',                  registerUser);
-router.post('/login',                     loginLimiter,         loginUser);
+router.post('/register',       registerValidationRules, handleValidationErrors, registerUser);
+router.post('/login',          loginLimiter, loginValidationRules, handleValidationErrors, loginUser);
 router.post('/forgot-password',           forgotPasswordLimiter, forgotPassword);
 router.put( '/reset-password/:token',     resetPassword);
 
