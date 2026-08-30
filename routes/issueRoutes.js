@@ -16,7 +16,7 @@ const {
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { uploadArray }        = require('../middleware/uploadMiddleware');
 const {
-  handleValidationErrors,
+  handleUploadValidationErrors,
   createIssueValidationRules,
 } = require('../middleware/validators');
 
@@ -29,13 +29,14 @@ const {
 router.get('/my-issues', protect, getMyIssues);
 
 // GET  /api/issues             — public, filterable, paginated
-// POST /api/issues             — create issue (authenticated + validation + file upload)
-// Validation intentionally runs BEFORE uploadArray: an invalid request is
-// rejected here without ever starting a Cloudinary upload.
+// POST /api/issues             — create issue (authenticated + upload + validation)
+// Multer (uploadArray) MUST run before validation rules because multipart/form-data
+// req.body is empty until the stream is parsed.  handleUploadValidationErrors then
+// deletes any already-uploaded Cloudinary assets if validation subsequently fails.
 router
   .route('/')
   .get(getIssues)
-  .post(protect, createIssueValidationRules, handleValidationErrors, uploadArray, createIssue);
+  .post(protect, uploadArray, createIssueValidationRules, handleUploadValidationErrors, createIssue);
 
 // GET    /api/issues/:id       — single issue detail (public)
 // PUT    /api/issues/:id       — update issue (reporter while Pending, or admin)

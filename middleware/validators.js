@@ -1,17 +1,20 @@
 const { body, validationResult } = require('express-validator');
+const cloudinary               = require('../config/cloudinary');
 
 // ─── Shared error handler ─────────────────────────────────────────────────────
 /**
  * Reads the accumulated validation errors from express-validator.
- * If any exist, responds immediately with 400 so the request never reaches
- * the controller (and — critically for createIssue — never triggers the
- * Multer/Cloudinary upload middleware that follows in the chain).
+ * If any exist, responds immediately with 400.
  *
  * Response shape mirrors the rest of the API:
  *   { message: "<first human-readable summary>", errors: [{ field, message }] }
  *
- * The `errors` array is optional but gives the frontend enough structure to
- * highlight individual form fields without parsing the summary string.
+ * The `errors` array gives the frontend enough structure to highlight individual
+ * form fields without parsing the summary string.
+ *
+ * Use this handler for JSON-body routes (register, login).  For multipart routes
+ * that run Multer first, use handleUploadValidationErrors instead so that any
+ * already-uploaded Cloudinary assets are cleaned up before the 400 is sent.
  */
 const handleValidationErrors = (req, res, next) => {
   const result = validationResult(req);
@@ -22,9 +25,55 @@ const handleValidationErrors = (req, res, next) => {
     message: e.msg,
   }));
 
-  // Use the first error as the top-level message so callers that only look at
-  // `message` (e.g. the existing error interceptor in the frontend) still get
-  // a readable string rather than "[object Object]".
+  return res.status(400).json({
+    message: errors[0].message,
+    errors,
+  });
+};
+
+// ─── Upload-aware error handler ───────────────────────────────────────────────
+/**
+ * Same as handleValidationErrors, but for routes where Multer runs first
+ * (i.e. multipart/form-data with file uploads).
+ *
+ * Why this exists: Multer must run before express-validator on multipart
+ * requests because req.body is only populated after Multer parses the stream.
+ * That means images may already be sitting in Cloudinary by the time validation
+ * runs.  If validation then fails, this handler deletes those orphaned assets
+ * before returning 400, keeping the Cloudinary media library clean.
+ *
+ * Cleanup is best-effort: a failed destroy() call is logged but never allowed
+ * to suppress the validation 400 response.
+ *
+ * multer-storage-cloudinary sets file.filename to the Cloudinary public_id,
+ * which is what cloudinary.uploader.destroy() expects.
+ */
+const handleUploadValidationErrors = async (req, res, next) => {
+  const result = validationResult(req);
+  if (result.isEmpty()) return next();
+
+  // Clean up any files already uploaded to Cloudinary during this request.
+  if (req.files && req.files.length > 0) {
+    try {
+      await Promise.all(
+        req.files.map((file) =>
+          cloudinary.uploader.destroy(file.filename)
+        )
+      );
+    } catch (cleanupErr) {
+      // Log but never block the error response — cleanup is best-effort.
+      console.error(
+        '[CivicFix] Cloudinary cleanup after validation failure:',
+        cleanupErr.message
+      );
+    }
+  }
+
+  const errors = result.array().map((e) => ({
+    field:   e.path,
+    message: e.msg,
+  }));
+
   return res.status(400).json({
     message: errors[0].message,
     errors,
@@ -83,9 +132,15 @@ const loginValidationRules = [
 // ─── Create Issue ─────────────────────────────────────────────────────────────
 /**
  * Validates POST /api/issues.
- * This runs BEFORE the Multer/Cloudinary upload middleware on purpose — an
- * invalid payload is rejected here so we never burn a real Cloudinary upload
- * slot on a request that would have failed anyway at the controller level.
+ *
+ * IMPORTANT — middleware order on this route:
+ *   protect → uploadArray → createIssueValidationRules
+ *     → handleUploadValidationErrors → createIssue
+ *
+ * Multer must run first on multipart/form-data requests because req.body is
+ * empty until the stream is parsed — so validation runs after the upload.
+ * handleUploadValidationErrors then cleans up any Cloudinary assets that were
+ * already created if validation subsequently fails.
  */
 const createIssueValidationRules = [
   body('title')
@@ -138,6 +193,7 @@ const createIssueValidationRules = [
 
 module.exports = {
   handleValidationErrors,
+  handleUploadValidationErrors,
   registerValidationRules,
   loginValidationRules,
   createIssueValidationRules,
