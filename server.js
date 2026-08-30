@@ -53,6 +53,7 @@ if (process.env.NODE_ENV === 'development') {
 // updated to reference the Cloudinary URL stored in the database instead.
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
+app.use('/api/public',         require('./routes/publicRoutes'));  // no auth required
 app.use('/api/auth',          require('./routes/authRoutes'));
 // TODO: mount user routes      → app.use('/api/users',      require('./routes/userRoutes'));
 app.use('/api/admin',          require('./routes/adminRoutes'));
