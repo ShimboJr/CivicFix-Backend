@@ -1,4 +1,10 @@
-require('dotenv').config();
+// Load the appropriate env file first — before any other module reads process.env.
+// cross-env in the "test" script sets NODE_ENV=test before Node starts, so this
+// branch executes correctly at module-load time.  .env.test contains only safe
+// dummy values (no real MONGO_URI), which is layer 3 of the DB-safety model.
+require('dotenv').config({
+  path: process.env.NODE_ENV === 'test' ? '.env.test' : '.env',
+});
 
 const express   = require('express');
 const cors      = require('cors');

@@ -21,7 +21,20 @@ const mongoose = require('mongoose');
  * for its environment.
  */
 const connectDB = async () => {
-  // Already connected (or in the process of connecting) — skip
+  // ── Guard 1: test mode ───────────────────────────────────────────────────
+  // Never connect to a real database during test runs.  setup.js manages the
+  // Mongoose connection exclusively in test mode, pointing it at an in-memory
+  // MongoDB instance.  If connectDB() were allowed to run in test mode it
+  // could connect to the real Atlas cluster (via MONGO_URI from .env) before
+  // setup.js's connectTestDB() runs — Jest executes require/import statements
+  // synchronously at module load time, before any beforeAll() hook fires.
+  // That was the exact sequence that wiped the real Atlas database.
+  if (process.env.NODE_ENV === 'test') return;
+
+  // ── Guard 2: already connected ───────────────────────────────────────────
+  // Serverless warm instances re-use the same Node.js process for multiple
+  // requests.  Skip mongoose.connect() if a live connection already exists.
+  // readyState: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
   if (mongoose.connection.readyState !== 0) return;
 
   try {
