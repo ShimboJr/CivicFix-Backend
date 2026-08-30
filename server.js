@@ -15,7 +15,31 @@ const app = express();
 // ─── Core Middleware ─────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
+
+// ─── CORS ────────────────────────────────────────────────────────────────────
+// Allowlist: production frontend (set via CLIENT_URL in the deployment env) +
+// the Vite dev-server origin for local development.
+// Auth uses a Bearer token in the Authorization header, so credentialed
+// cookie-based requests are not required here.
+const ALLOWED_ORIGINS = [
+  process.env.CLIENT_URL,      // e.g. https://civicfix.vercel.app
+  'http://localhost:5173',     // Vite dev server
+].filter(Boolean);             // drop undefined if CLIENT_URL is not set
+
+app.use(
+  cors({
+    origin(requestOrigin, callback) {
+      // Allow requests with no Origin header (same-origin, Postman, curl, etc.)
+      if (!requestOrigin) return callback(null, true);
+
+      if (ALLOWED_ORIGINS.includes(requestOrigin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS: origin '${requestOrigin}' is not allowed`));
+      }
+    },
+  })
+);
 
 // HTTP request logger — development only
 if (process.env.NODE_ENV === 'development') {
