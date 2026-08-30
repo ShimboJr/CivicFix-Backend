@@ -37,6 +37,20 @@ const userSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // ── Account-lockout tracking ───────────────────────────────────────────────
+    // Incremented on each failed login; reset to 0 on success or when a lock fires.
+    failedLoginAttempts: {
+      type:    Number,
+      default: 0,
+    },
+    // Set to a future Date when failedLoginAttempts reaches MAX_ATTEMPTS.
+    // While Date.now() < lockUntil the account is locked regardless of password.
+    // Cleared (set to null) on the next successful login after the window passes.
+    lockUntil: {
+      type:    Date,
+      default: null,
+    },
+
     // ── Password reset ─────────────────────────────────────────────────────────
     // The raw token is NEVER stored — only its sha256 hash is persisted here so
     // that a database breach cannot be used to reset accounts.

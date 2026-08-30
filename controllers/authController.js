@@ -3,6 +3,7 @@ const asyncHandler  = require('express-async-handler');
 const User          = require('../models/User');
 const generateToken = require('../utils/generateToken');
 const { transporter, FROM_ADDRESS } = require('../config/email');
+const { MAX_ATTEMPTS, LOCK_DURATION_MS } = require('../utils/accountLockout');
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 /**
@@ -65,14 +66,53 @@ const loginUser = asyncHandler(async (req, res) => {
     throw new Error('Please provide email and password');
   }
 
-  // Explicitly select password since it is excluded by default (select: false)
-  const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+  // Explicitly select password (select:false by default) plus the lockout fields
+  const user = await User.findOne({ email: email.toLowerCase() })
+    .select('+password +failedLoginAttempts +lockUntil');
 
-  // Use a generic message for any credential mismatch.
-  // Never reveal whether the email exists in the system.
-  if (!user || !(await user.matchPassword(password))) {
+  // ── Phase 1: account-lock check ───────────────────────────────────────────
+  // Do this before touching the password so a locked account is rejected even
+  // if the attacker happens to supply the correct password this time.
+  if (user && user.lockUntil && user.lockUntil > Date.now()) {
+    const minsLeft = Math.ceil((user.lockUntil - Date.now()) / 60_000);
+    res.status(423);
+    throw new Error(
+      `Too many failed attempts. Try again in ${minsLeft} minute${minsLeft === 1 ? '' : 's'}.`
+    );
+  }
+
+  // ── Phase 2: password check ───────────────────────────────────────────────
+  const passwordCorrect = user && (await user.matchPassword(password));
+
+  if (!passwordCorrect) {
+    // Generic message — never reveal whether the email exists in the system.
+    // If we have a real user, track the failed attempt.
+    if (user) {
+      user.failedLoginAttempts += 1;
+
+      if (user.failedLoginAttempts >= MAX_ATTEMPTS) {
+        // Threshold reached — engage lock and reset the counter.
+        // The lock itself is now doing the enforcement work, not a growing counter.
+        user.lockUntil           = new Date(Date.now() + LOCK_DURATION_MS);
+        user.failedLoginAttempts = 0;
+      }
+
+      // Use validateBeforeSave:false so we don't trigger required-field validation
+      // on fields like password that aren't being changed here.
+      await user.save({ validateBeforeSave: false });
+    }
+
+    // Return the same 401 as before — don't disclose on this attempt that the
+    // account may now be locked; the 423 only shows on the *next* attempt.
     res.status(401);
     throw new Error('Invalid credentials');
+  }
+
+  // ── Phase 3: successful login — reset lockout state ───────────────────────
+  if (user.failedLoginAttempts !== 0 || user.lockUntil !== null) {
+    user.failedLoginAttempts = 0;
+    user.lockUntil           = null;
+    await user.save({ validateBeforeSave: false });
   }
 
   authResponse(res, 200, user);
