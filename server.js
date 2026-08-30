@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const cors    = require('cors');
+const helmet  = require('helmet');
 const morgan  = require('morgan');
 const path    = require('path');
 
@@ -11,6 +12,17 @@ const connectDB = require('./config/db');
 connectDB();
 
 const app = express();
+
+// ─── Security Headers (helmet) ───────────────────────────────────────────────
+// crossOriginResourcePolicy is relaxed to "cross-origin" so that browsers can
+// load images hosted on Cloudinary (res.cloudinary.com) without being blocked
+// by the CORP header.  All other helmet defaults remain — including removal of
+// the X-Powered-By header, HSTS, X-Frame-Options, X-Content-Type-Options, etc.
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 
 // ─── Core Middleware ─────────────────────────────────────────────────────────
 app.use(express.json());
