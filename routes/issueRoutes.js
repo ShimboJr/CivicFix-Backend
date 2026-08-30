@@ -15,6 +15,7 @@ const {
 
 const { protect, authorize } = require('../middleware/authMiddleware');
 const { uploadArray }        = require('../middleware/uploadMiddleware');
+const { parseLocation }      = require('../middleware/parseLocation');
 const {
   handleUploadValidationErrors,
   createIssueValidationRules,
@@ -30,13 +31,30 @@ router.get('/my-issues', protect, getMyIssues);
 
 // GET  /api/issues             — public, filterable, paginated
 // POST /api/issues             — create issue (authenticated + upload + validation)
-// Multer (uploadArray) MUST run before validation rules because multipart/form-data
-// req.body is empty until the stream is parsed.  handleUploadValidationErrors then
-// deletes any already-uploaded Cloudinary assets if validation subsequently fails.
+//
+// Middleware order rationale:
+//   1. protect           — reject unauthenticated requests first (cheap)
+//   2. uploadArray       — Multer must run before anything reads req.body;
+//                          multipart/form-data is opaque until Multer parses it
+//   3. parseLocation     — rehydrates req.body.location from the JSON string
+//                          the frontend appends via FormData.append('location',
+//                          JSON.stringify({...})) so the validator can read
+//                          location.address as a nested property
+//   4. createIssueValidationRules + handleUploadValidationErrors
+//                        — validate fields; clean up any Cloudinary uploads
+//                          before returning 400 if validation fails
+//   5. createIssue       — controller (only reached on a fully-valid request)
 router
   .route('/')
   .get(getIssues)
-  .post(protect, uploadArray, createIssueValidationRules, handleUploadValidationErrors, createIssue);
+  .post(
+    protect,
+    uploadArray,
+    parseLocation,
+    createIssueValidationRules,
+    handleUploadValidationErrors,
+    createIssue,
+  );
 
 // GET    /api/issues/:id       — single issue detail (public)
 // PUT    /api/issues/:id       — update issue (reporter while Pending, or admin)
