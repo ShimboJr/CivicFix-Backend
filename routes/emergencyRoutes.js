@@ -13,6 +13,7 @@ const {
   getAllEmergencyReports,
   acknowledgeReport,
   updateReportStatus,
+  getEmergencyNumber,
 } = require('../controllers/emergencyController');
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -30,6 +31,16 @@ const {
 //    - No staff access
 //    - No endpoint to view another user's reports
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ── Public routes (no authentication required) ───────────────────────────────
+// MUST be declared before any /:id routes so Express does not try to match
+// the literal string "emergency-number" as a MongoDB ObjectId.
+//
+// GET /emergency-number?country=XX
+//   Returns verified police/fire/ambulance numbers for the given ISO 3166-1
+//   alpha-2 country code, or 404 if the country is not in the dataset.
+//   The client MUST show a generic fallback on 404 — never a guessed number.
+router.get('/emergency-number', getEmergencyNumber);
 
 // ── Reporter-accessible routes (any authenticated user) ───────────────────────
 // IMPORTANT: /my-reports MUST be declared BEFORE /:id so Express does not try
