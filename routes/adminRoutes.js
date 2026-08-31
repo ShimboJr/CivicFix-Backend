@@ -16,6 +16,8 @@ const {
   deleteCategory,
   assignIssue,
   updateIssueStatus,
+  bulkAssignIssues,
+  bulkRejectIssues,
 } = require('../controllers/adminController');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -46,7 +48,13 @@ router.route('/categories/:id')
   .put(updateCategory)
   .delete(deleteCategory);
 
-// ── Issue Management ──────────────────────────────────────────────────────────
+// ── Issue Management ───────────────────────────────────────────────────────
+// IMPORTANT: bulk-action routes MUST come before /:id routes so Express does
+// not try to match the literal string "bulk-assign" as a MongoDB ObjectId.
+router.post('/issues/bulk-assign',  bulkAssignIssues);
+router.post('/issues/bulk-reject',  bulkRejectIssues);
+
+// Single-issue actions
 router.patch('/issues/:id/assign', assignIssue);
 router.patch('/issues/:id/status', updateIssueStatus);
 

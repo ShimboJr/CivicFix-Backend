@@ -1,10 +1,11 @@
-const asyncHandler           = require('express-async-handler');
-const mongoose               = require('mongoose');
-const Issue                  = require('../models/Issue');
-const User                   = require('../models/User');
-const Category               = require('../models/Category');
-const { notifyStatusChange } = require('../utils/notify');
-const { logStatusChange }    = require('../utils/auditLog');
+const asyncHandler            = require('express-async-handler');
+const mongoose                = require('mongoose');
+const Issue                   = require('../models/Issue');
+const User                    = require('../models/User');
+const Category                = require('../models/Category');
+const { notifyStatusChange }  = require('../utils/notify');
+const { logStatusChange }     = require('../utils/auditLog');
+const { changeIssueStatus }   = require('../utils/issueStatusHelper');
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -448,18 +449,14 @@ const assignIssue = asyncHandler(async (req, res) => {
     throw new Error('The provided user either does not exist or is not a staff member');
   }
 
-  // Capture the pre-write status for the audit log
-  const fromStatus = issue.status;
-
-  issue.assignedTo = staffId;
-  issue.status     = 'Assigned';
-  await issue.save();
-
-  // Notify the reporter that their issue has been assigned
-  await notifyStatusChange(issue._id, issue.reportedBy, 'Assigned');
-
-  // Write an audit entry: who assigned it, from what status, to 'Assigned'
-  await logStatusChange(issue._id, req.user._id, fromStatus, 'Assigned');
+  // Delegate all mutation + notify + audit-log to the shared helper.
+  // Behaviour is identical to the previous inline implementation.
+  await changeIssueStatus({
+    issue,
+    newStatus:      'Assigned',
+    changedByUserId: req.user._id,
+    assignedTo:     staffId,
+  });
 
   await issue.populate([
     { path: 'category',   select: 'name icon' },
@@ -496,31 +493,14 @@ const updateIssueStatus = asyncHandler(async (req, res) => {
     throw new Error('Issue not found');
   }
 
-  // Capture the pre-write status for the audit log
-  const fromStatus = issue.status;
-
-  issue.status = status;
-
-  // Capture rejection reason when rejecting; clear it on any other transition
-  if (status === 'Rejected' && rejectionReason) {
-    issue.rejectionReason = rejectionReason.trim();
-  } else if (status !== 'Rejected') {
-    issue.rejectionReason = undefined;
-  }
-
-  const updated = await issue.save();
-
-  // Notify the reporter of every admin-driven status change (including Rejected)
-  await notifyStatusChange(updated._id, updated.reportedBy, status);
-
-  // Write an audit entry; pass rejectionReason as `reason` for Rejected transitions
-  await logStatusChange(
-    updated._id,
-    req.user._id,
-    fromStatus,
-    status,
-    status === 'Rejected' ? rejectionReason : undefined
-  );
+  // Delegate all mutation + notify + audit-log to the shared helper.
+  // Behaviour is identical to the previous inline implementation.
+  const updated = await changeIssueStatus({
+    issue,
+    newStatus:       status,
+    changedByUserId: req.user._id,
+    reason:          rejectionReason,
+  });
 
   await updated.populate([
     { path: 'category',   select: 'name icon' },
@@ -529,6 +509,122 @@ const updateIssueStatus = asyncHandler(async (req, res) => {
   ]);
 
   res.status(200).json(updated);
+});
+
+// ─── @desc    Bulk-assign multiple issues to one staff member
+// ─── @route   POST /api/admin/issues/bulk-assign
+// ─── @access  Private, admin
+//
+// Skips issues that are already 'Resolved' — reassigning a closed issue
+// doesn’t make operational sense and would confuse both the assignee and reporter.
+// Returns a summary so the admin can see exactly what happened.
+const bulkAssignIssues = asyncHandler(async (req, res) => {
+  const { issueIds, staffId } = req.body;
+
+  if (!Array.isArray(issueIds) || issueIds.length === 0) {
+    res.status(400);
+    throw new Error('issueIds must be a non-empty array');
+  }
+
+  if (!staffId || !mongoose.Types.ObjectId.isValid(staffId)) {
+    res.status(400);
+    throw new Error('A valid staffId is required');
+  }
+
+  // Validate all issue ids before touching any of them
+  const invalidIds = issueIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+  if (invalidIds.length > 0) {
+    res.status(400);
+    throw new Error(`Invalid issue id(s): ${invalidIds.join(', ')}`);
+  }
+
+  const staffUser = await User.findById(staffId);
+  if (!staffUser || staffUser.role !== 'staff') {
+    res.status(400);
+    throw new Error('The provided user either does not exist or is not a staff member');
+  }
+
+  const succeeded = [];
+  const skipped   = [];
+
+  // Process issues sequentially rather than in parallel: each save + notify +
+  // audit is a chain of async calls; parallelising them risks hitting Atlas
+  // connection limits on large selections and makes the skip/error accounting messier.
+  for (const issueId of issueIds) {
+    const issue = await Issue.findById(issueId);
+
+    if (!issue) {
+      // Not found — count as skipped with a note; don’t fail the whole batch
+      skipped.push({ id: issueId, reason: 'not found' });
+      continue;
+    }
+
+    if (issue.status === 'Resolved') {
+      // Skip resolved issues — reassigning doesn’t make sense once done
+      skipped.push({ id: issueId, reason: 'already resolved' });
+      continue;
+    }
+
+    await changeIssueStatus({
+      issue,
+      newStatus:       'Assigned',
+      changedByUserId: req.user._id,
+      assignedTo:      staffId,
+    });
+
+    succeeded.push(issueId);
+  }
+
+  res.status(200).json({ succeeded, skipped });
+});
+
+// ─── @desc    Bulk-reject multiple issues
+// ─── @route   POST /api/admin/issues/bulk-reject
+// ─── @access  Private, admin
+//
+// Skips issues that are already 'Resolved' or 'Rejected'.
+// Optional rejection reason applied uniformly to every issue in the batch.
+const bulkRejectIssues = asyncHandler(async (req, res) => {
+  const { issueIds, reason } = req.body;
+
+  if (!Array.isArray(issueIds) || issueIds.length === 0) {
+    res.status(400);
+    throw new Error('issueIds must be a non-empty array');
+  }
+
+  const invalidIds = issueIds.filter((id) => !mongoose.Types.ObjectId.isValid(id));
+  if (invalidIds.length > 0) {
+    res.status(400);
+    throw new Error(`Invalid issue id(s): ${invalidIds.join(', ')}`);
+  }
+
+  const succeeded = [];
+  const skipped   = [];
+
+  for (const issueId of issueIds) {
+    const issue = await Issue.findById(issueId);
+
+    if (!issue) {
+      skipped.push({ id: issueId, reason: 'not found' });
+      continue;
+    }
+
+    if (issue.status === 'Resolved' || issue.status === 'Rejected') {
+      skipped.push({ id: issueId, reason: `already ${issue.status.toLowerCase()}` });
+      continue;
+    }
+
+    await changeIssueStatus({
+      issue,
+      newStatus:       'Rejected',
+      changedByUserId: req.user._id,
+      reason:          reason || undefined,
+    });
+
+    succeeded.push(issueId);
+  }
+
+  res.status(200).json({ succeeded, skipped });
 });
 
 module.exports = {
@@ -544,4 +640,6 @@ module.exports = {
   deleteCategory,
   assignIssue,
   updateIssueStatus,
+  bulkAssignIssues,
+  bulkRejectIssues,
 };
