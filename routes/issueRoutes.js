@@ -12,6 +12,7 @@ const {
   addComment,
   getComments,
   getIssueAuditLog,
+  getNearbyIssues,
 } = require('../controllers/issueController');
 
 const { protect, authorize } = require('../middleware/authMiddleware');
@@ -23,12 +24,17 @@ const {
 } = require('../middleware/validators');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IMPORTANT: specific named paths (e.g. /my-issues) MUST be declared BEFORE
-// the /:id param route — otherwise Express treats "my-issues" as an id value.
+// IMPORTANT: specific named paths (e.g. /my-issues, /nearby) MUST be declared
+// BEFORE the /:id param route — otherwise Express treats those strings as id values.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET  /api/issues/my-issues   — authenticated user's own issues + summary
 router.get('/my-issues', protect, getMyIssues);
+
+// GET  /api/issues/nearby?latitude=&longitude=&category=
+// Duplicate-detection: returns open issues in the same category within ~55 m.
+// Public — no auth required (same pattern as GET /api/issues).
+router.get('/nearby', getNearbyIssues);
 
 // GET  /api/issues             — public, filterable, paginated
 // POST /api/issues             — create issue (authenticated + upload + validation)

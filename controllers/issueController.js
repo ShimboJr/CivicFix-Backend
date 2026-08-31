@@ -346,6 +346,61 @@ const getIssueAuditLog = asyncHandler(async (req, res) => {
   res.status(200).json(entries);
 });
 
+// ─── @desc    Find open issues near a given coordinate in the same category
+// ─── @route   GET /api/issues/nearby?latitude=&longitude=&category=
+// ─── @access  Public — same pattern as getIssues / getIssueById
+//
+// Uses a bounding-box range query (±0.0005° ≈ 55 m at mid-latitudes) rather
+// than a geospatial aggregation because this runs live on every form
+// interaction, not as a periodic report.  The same ±0.0005 scale was used in
+// the problem-areas ranking (Prompt D) expressed as 3-decimal-place rounding.
+//
+// Only returns issues with an "open" status — Resolved and Rejected are done
+// and consolidating into them doesn't make operational sense.
+const NEARBY_DELTA = 0.0005; // ≈ 55 m at equator, good enough for urban same-block detection
+const OPEN_STATUSES = ['Pending', 'Under Review', 'Assigned', 'In Progress'];
+
+const getNearbyIssues = asyncHandler(async (req, res) => {
+  const { latitude, longitude, category } = req.query;
+
+  const lat = parseFloat(latitude);
+  const lng = parseFloat(longitude);
+
+  if (isNaN(lat) || isNaN(lng)) {
+    res.status(400);
+    throw new Error('Valid latitude and longitude query parameters are required');
+  }
+
+  if (!category) {
+    res.status(400);
+    throw new Error('category query parameter is required');
+  }
+
+  const nearby = await Issue.find({
+    category,
+    status:             { $in: OPEN_STATUSES },
+    'location.latitude':  { $gte: lat - NEARBY_DELTA, $lte: lat + NEARBY_DELTA },
+    'location.longitude': { $gte: lng - NEARBY_DELTA, $lte: lng + NEARBY_DELTA },
+  })
+    .sort({ 'upvotes.length': -1 }) // most-corroborated first
+    .limit(5)
+    .select('_id issueId title status upvotes');
+
+  // Sort by actual upvote array length (Mongoose can't sort on array.length
+  // without an aggregation, so we sort in JS after the small limit)
+  const sorted = nearby.sort((a, b) => b.upvotes.length - a.upvotes.length);
+
+  res.status(200).json(
+    sorted.map((i) => ({
+      _id:        i._id,
+      issueId:    i.issueId,
+      title:      i.title,
+      status:     i.status,
+      upvoteCount: i.upvotes.length,
+    }))
+  );
+});
+
 module.exports = {
   createIssue,
   getIssues,
@@ -357,4 +412,5 @@ module.exports = {
   addComment,
   getComments,
   getIssueAuditLog,
+  getNearbyIssues,
 };
