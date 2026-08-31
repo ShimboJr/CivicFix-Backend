@@ -1,6 +1,32 @@
 const asyncHandler      = require('express-async-handler');
 const mongoose          = require('mongoose');
 const EmergencyReport   = require('../models/EmergencyReport');
+const cloudinary        = require('../config/cloudinary');
+
+// ─── cleanupFiles ─────────────────────────────────────────────────────────────
+// Deletes every asset in `files` from Cloudinary using Promise.allSettled so a
+// single failing destroy never prevents the others from being attempted.
+// Called whenever validation fails AFTER files have already been uploaded, to
+// prevent orphaned media accumulating in the emergency-reports folder.
+const cleanupFiles = async (files = []) => {
+  if (!files.length) return;
+  await Promise.allSettled(
+    files.map((f) => {
+      const resourceType =
+        f.mimetype?.startsWith('video/') || f.resource_type === 'video'
+          ? 'video'
+          : 'image';
+      return cloudinary.uploader
+        .destroy(f.filename, { resource_type: resourceType })
+        .catch((e) =>
+          console.error(
+            `[emergencyController] Cloudinary cleanup failed for ${f.filename}:`,
+            e.message
+          )
+        );
+    })
+  );
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  VISIBILITY CONTRACT (enforced at route level, stated here for clarity)
@@ -22,28 +48,61 @@ const EmergencyReport   = require('../models/EmergencyReport');
 // ─── @desc    Submit a new emergency report
 // ─── @route   POST /api/emergency-reports
 // ─── @access  Private (any authenticated user)
+//
+// Expects multipart/form-data with:
+//   type, description, location (JSON string or object), and up to 5 files
+//   in the 'media' field — processed by uploadEmergencyMedia +
+//   checkVideoDurations BEFORE this handler runs.
+//
+// If validation fails here (after the upload middleware has already sent files
+// to Cloudinary), cleanupFiles() deletes every just-uploaded asset so nothing
+// is left orphaned in the emergency-reports Cloudinary folder.
 const createEmergencyReport = asyncHandler(async (req, res) => {
-  const { type, description, location, media } = req.body;
+  const uploadedFiles = req.files || [];
 
-  // ── Basic presence checks ─────────────────────────────────────────────────
+  // ── Helper: reject with cleanup ───────────────────────────────────────────
+  // Inline so we can return a throw-style error without losing the status code.
+  const rejectWithCleanup = async (statusCode, message) => {
+    await cleanupFiles(uploadedFiles);
+    res.status(statusCode);
+    throw new Error(message);
+  };
+
+  // ── Parse location ────────────────────────────────────────────────────────
+  // The form is submitted as multipart/form-data (because of file uploads).
+  // FormData cannot natively represent nested objects so the frontend sends
+  // location as JSON.stringify({ address, latitude, longitude }).  We handle
+  // both the stringified and already-parsed cases.
+  let location;
+  try {
+    location =
+      typeof req.body.location === 'string'
+        ? JSON.parse(req.body.location)
+        : req.body.location;
+  } catch {
+    await rejectWithCleanup(400, 'Invalid location format — expected a JSON object');
+  }
+
+  const { type, description } = req.body;
+
+  // ── Presence validation ───────────────────────────────────────────────────
   if (!type) {
-    res.status(400);
-    throw new Error('Emergency type is required');
+    await rejectWithCleanup(400, 'Emergency type is required');
   }
-  if (!description || !description.trim()) {
-    res.status(400);
-    throw new Error('Description is required');
+  if (!description || !String(description).trim()) {
+    await rejectWithCleanup(400, 'Description is required');
   }
-  if (!location || !location.address) {
-    res.status(400);
-    throw new Error('Location with a valid address is required');
+  if (!location?.address) {
+    await rejectWithCleanup(400, 'Location with a valid address is required');
   }
-  if (location.latitude === undefined || location.longitude === undefined) {
-    res.status(400);
-    throw new Error('Location latitude and longitude are required');
+  if (location?.latitude === undefined || location?.longitude === undefined) {
+    await rejectWithCleanup(
+      400,
+      'Location latitude and longitude are required'
+    );
   }
 
-  // ── Validate enum ─────────────────────────────────────────────────────────
+  // ── Type enum validation ──────────────────────────────────────────────────
   const VALID_TYPES = [
     'Armed Robbery',
     'Physical Assault / Violence',
@@ -55,26 +114,45 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
     'Other Life-Threatening Emergency',
   ];
   if (!VALID_TYPES.includes(type)) {
-    res.status(400);
-    throw new Error(`Invalid emergency type. Must be one of: ${VALID_TYPES.join(', ')}`);
+    await rejectWithCleanup(
+      400,
+      `Invalid emergency type. Must be one of: ${VALID_TYPES.join(', ')}`
+    );
   }
 
-  // ── Create ────────────────────────────────────────────────────────────────
-  // Status defaults to 'New' via the schema; reporter is the authenticated user.
-  // `media` is accepted as a pre-populated array from the request body — the
-  // upload/processing pipeline (Prompt 2) will produce this array before
-  // calling this endpoint.  An absent media field defaults to [] via the schema.
+  // ── Build media array from uploaded files ─────────────────────────────────
+  // multer-storage-cloudinary v4 spreads the full Cloudinary API response onto
+  // each file object, giving us:
+  //   f.path          — the Cloudinary secure_url (used as the stored URL)
+  //   f.resource_type — 'image' or 'video' as determined by Cloudinary
+  //   f.duration      — seconds of video (present only for video resources)
+  //   f.filename      — public_id (used by cleanupFiles for destroy calls)
+  const media = uploadedFiles.map((f) => {
+    const isVideo =
+      f.mimetype?.startsWith('video/') || f.resource_type === 'video';
+    return {
+      url:  f.path,                                        // Cloudinary secure_url
+      type: isVideo ? 'video' : 'image',
+      // durationSeconds is only meaningful for video; omit the key for images
+      // so the schema's optional field doesn't store a spurious null/undefined.
+      ...(isVideo && typeof f.duration === 'number'
+        ? { durationSeconds: f.duration }
+        : {}),
+    };
+  });
+
+  // ── Persist ───────────────────────────────────────────────────────────────
   const report = await EmergencyReport.create({
     reporter:    req.user._id,
     type,
-    description: description.trim(),
-    location:    {
+    description: String(description).trim(),
+    location: {
       address:   location.address,
       latitude:  parseFloat(location.latitude),
       longitude: parseFloat(location.longitude),
     },
-    media:       Array.isArray(media) ? media : [],
-    status:      'New',
+    media,
+    status: 'New',
   });
 
   res.status(201).json(report);

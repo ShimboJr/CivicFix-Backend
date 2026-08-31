@@ -2,6 +2,10 @@ const express = require('express');
 const router  = express.Router();
 
 const { protect, authorize } = require('../middleware/authMiddleware');
+const {
+  uploadEmergencyMedia,
+  checkVideoDurations,
+} = require('../middleware/emergencyUploadMiddleware');
 
 const {
   createEmergencyReport,
@@ -30,7 +34,19 @@ const {
 // ── Reporter-accessible routes (any authenticated user) ───────────────────────
 // IMPORTANT: /my-reports MUST be declared BEFORE /:id so Express does not try
 // to match the literal string "my-reports" as a MongoDB ObjectId.
-router.post('/',           protect, createEmergencyReport);
+//
+// POST / middleware chain:
+//   protect              — JWT auth gate
+//   uploadEmergencyMedia — streams files to Cloudinary, enforces size cap
+//   checkVideoDurations  — rejects + cleans up if any video exceeds 15 s
+//   createEmergencyReport — validates body fields, builds media array, persists
+router.post(
+  '/',
+  protect,
+  uploadEmergencyMedia,
+  checkVideoDurations,
+  createEmergencyReport
+);
 router.get( '/my-reports', protect, getMyEmergencyReports);
 
 // ── Admin-only routes ─────────────────────────────────────────────────────────
