@@ -109,6 +109,7 @@ app.use('/api/staff',          require('./routes/staffRoutes'));
 app.use('/api/issues',         require('./routes/issueRoutes'));
 app.use('/api/categories',     require('./routes/categoryRoutes'));
 app.use('/api/notifications',  require('./routes/notificationRoutes'));
+app.use('/api/emergency-reports', require('./routes/emergencyRoutes'));
 // TODO: mount comment routes   → app.use('/api/comments',   require('./routes/commentRoutes'));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
