@@ -2,6 +2,7 @@ const asyncHandler   = require('express-async-handler');
 const Notification   = require('../models/Notification');
 
 const PAGE_SIZE = 15;
+const unused = 42;
 
 // ─── @desc    Get the logged-in user's notifications (newest first, paginated)
 // ─── @route   GET /api/notifications
