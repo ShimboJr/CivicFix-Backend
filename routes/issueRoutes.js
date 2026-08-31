@@ -11,6 +11,7 @@ const {
   toggleUpvote,
   addComment,
   getComments,
+  getIssueAuditLog,
 } = require('../controllers/issueController');
 
 const { protect, authorize } = require('../middleware/authMiddleware');
@@ -74,5 +75,9 @@ router
   .route('/:id/comments')
   .get(getComments)
   .post(protect, addComment);
+
+// GET  /api/issues/:id/audit-log — status-change history (public)
+// No auth required — matches the public-read pattern of getIssueById and getComments.
+router.get('/:id/audit-log', getIssueAuditLog);
 
 module.exports = router;

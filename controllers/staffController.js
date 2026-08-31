@@ -3,6 +3,7 @@ const mongoose               = require('mongoose');
 const Issue                  = require('../models/Issue');
 const Comment                = require('../models/Comment');
 const { notifyStatusChange } = require('../utils/notify');
+const { logStatusChange }    = require('../utils/auditLog');
 
 // ─── Allowed status transitions for staff members ─────────────────────────────
 // Staff can only move issues forward through their section of the workflow.
@@ -69,11 +70,17 @@ const updateProgress = asyncHandler(async (req, res) => {
     );
   }
 
+  // Capture the pre-write status for the audit log
+  const fromStatus = issue.status;
+
   issue.status = nextStatus;
   await issue.save();
 
   // Notify the original reporter of the progress update
   await notifyStatusChange(issue._id, issue.reportedBy, nextStatus);
+
+  // Write an audit entry for this forward transition
+  await logStatusChange(issue._id, req.user._id, fromStatus, nextStatus);
 
   // If a note was provided, post it as a Comment so residents see it in-thread
   if (note && note.trim()) {

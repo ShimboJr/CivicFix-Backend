@@ -1,9 +1,10 @@
-const asyncHandler        = require('express-async-handler');
-const mongoose            = require('mongoose');
-const Issue               = require('../models/Issue');
-const User                = require('../models/User');
-const Category            = require('../models/Category');
+const asyncHandler           = require('express-async-handler');
+const mongoose               = require('mongoose');
+const Issue                  = require('../models/Issue');
+const User                   = require('../models/User');
+const Category               = require('../models/Category');
 const { notifyStatusChange } = require('../utils/notify');
+const { logStatusChange }    = require('../utils/auditLog');
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -397,12 +398,18 @@ const assignIssue = asyncHandler(async (req, res) => {
     throw new Error('The provided user either does not exist or is not a staff member');
   }
 
+  // Capture the pre-write status for the audit log
+  const fromStatus = issue.status;
+
   issue.assignedTo = staffId;
   issue.status     = 'Assigned';
   await issue.save();
 
   // Notify the reporter that their issue has been assigned
   await notifyStatusChange(issue._id, issue.reportedBy, 'Assigned');
+
+  // Write an audit entry: who assigned it, from what status, to 'Assigned'
+  await logStatusChange(issue._id, req.user._id, fromStatus, 'Assigned');
 
   await issue.populate([
     { path: 'category',   select: 'name icon' },
@@ -439,6 +446,9 @@ const updateIssueStatus = asyncHandler(async (req, res) => {
     throw new Error('Issue not found');
   }
 
+  // Capture the pre-write status for the audit log
+  const fromStatus = issue.status;
+
   issue.status = status;
 
   // Capture rejection reason when rejecting; clear it on any other transition
@@ -452,6 +462,15 @@ const updateIssueStatus = asyncHandler(async (req, res) => {
 
   // Notify the reporter of every admin-driven status change (including Rejected)
   await notifyStatusChange(updated._id, updated.reportedBy, status);
+
+  // Write an audit entry; pass rejectionReason as `reason` for Rejected transitions
+  await logStatusChange(
+    updated._id,
+    req.user._id,
+    fromStatus,
+    status,
+    status === 'Rejected' ? rejectionReason : undefined
+  );
 
   await updated.populate([
     { path: 'category',   select: 'name icon' },

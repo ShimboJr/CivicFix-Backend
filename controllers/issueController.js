@@ -3,6 +3,7 @@ const mongoose       = require('mongoose');
 const Issue          = require('../models/Issue');
 const Comment        = require('../models/Comment');
 const Notification   = require('../models/Notification');
+const AuditLog       = require('../models/AuditLog');
 
 // ─── @desc    Create a new issue
 // ─── @route   POST /api/issues
@@ -321,6 +322,30 @@ const getComments = asyncHandler(async (req, res) => {
   res.status(200).json(comments);
 });
 
+// ─── @desc    Get the audit log (status-change history) for an issue
+// ─── @route   GET /api/issues/:id/audit-log
+// ─── @access  Public — matches the existing public-read pattern of getIssueById
+//                   and getComments; any visitor (logged-out or logged-in) can
+//                   see the change history of a public issue.
+const getIssueAuditLog = asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
+
+  const issue = await Issue.findById(req.params.id).select('_id');
+  if (!issue) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
+
+  const entries = await AuditLog.find({ issue: issue._id })
+    .sort({ createdAt: 1 }) // oldest first — chronological order
+    .populate('changedBy', 'name role');
+
+  res.status(200).json(entries);
+});
+
 module.exports = {
   createIssue,
   getIssues,
@@ -331,4 +356,5 @@ module.exports = {
   toggleUpvote,
   addComment,
   getComments,
+  getIssueAuditLog,
 };
