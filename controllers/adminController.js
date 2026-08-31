@@ -288,9 +288,59 @@ const deleteUser = asyncHandler(async (req, res) => {
   await user.deleteOne();
   res.status(200).json({ message: `User "${user.name}" deleted successfully` });
 });
+// ─── @desc    Get all staff members with their current active issue count
+// ─── @route   GET /api/admin/staff-workload
+// ─── @access  Private, admin
+//
+// "Active" means Assigned or In Progress — issues the staff member is currently
+// working on.  Resolved and Rejected issues are done and must not count toward
+// someone's current load.
+const getStaffWorkload = asyncHandler(async (_req, res) => {
+  // ── Step 1: all staff users ──────────────────────────────────────────────
+  const staffUsers = await User.find({ role: 'staff' })
+    .select('_id name email')
+    .lean();
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  CATEGORY MANAGEMENT
+  // ── Step 2: active assignment counts per staff member ───────────────────
+  // One aggregation pass — far cheaper than N individual count() calls.
+  const activeCounts = await Issue.aggregate([
+    {
+      $match: {
+        status:     { $in: ['Assigned', 'In Progress'] },
+        assignedTo: { $exists: true, $ne: null },
+      },
+    },
+    {
+      $group: {
+        _id:   '$assignedTo',
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  // Build a lookup map: staffId (string) → active count
+  const countMap = {};
+  activeCounts.forEach(({ _id, count }) => {
+    countMap[_id.toString()] = count;
+  });
+
+  // ── Step 3: merge counts onto the user list, default 0 ──────────────────
+  const workload = staffUsers
+    .map((u) => ({
+      _id:         u._id,
+      name:        u.name,
+      email:       u.email,
+      activeCount: countMap[u._id.toString()] || 0,
+    }))
+    // Sort ascending: lightest-loaded staff member appears first.
+    // This is the key ergonomic feature — admins shouldn’t have to scan
+    // every number to find who has the most capacity.
+    .sort((a, b) => a.activeCount - b.activeCount);
+
+  res.status(200).json(workload);
+});
+
+
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ─── @desc    Get all categories
@@ -487,6 +537,7 @@ module.exports = {
   getAllUsers,
   updateUserRole,
   deleteUser,
+  getStaffWorkload,
   getCategories,
   createCategory,
   updateCategory,

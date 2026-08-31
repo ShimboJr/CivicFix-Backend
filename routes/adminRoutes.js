@@ -9,6 +9,7 @@ const {
   getAllUsers,
   updateUserRole,
   deleteUser,
+  getStaffWorkload,
   getCategories,
   createCategory,
   updateCategory,
@@ -31,6 +32,10 @@ router.get('/analytics', getAnalytics);
 router.get('/users',              getAllUsers);
 router.patch('/users/:id/role',   updateUserRole);
 router.delete('/users/:id',       deleteUser);
+
+// GET /api/admin/staff-workload — each staff member + their active issue count,
+// sorted lightest-load-first.  Admin-only (guard applied at router level above).
+router.get('/staff-workload', getStaffWorkload);
 
 // ── Category Management ───────────────────────────────────────────────────────
 router.route('/categories')
