@@ -4,6 +4,7 @@ const Issue          = require('../models/Issue');
 const Comment        = require('../models/Comment');
 const Notification   = require('../models/Notification');
 const AuditLog       = require('../models/AuditLog');
+const { notifyAdminsNewIssue } = require('../utils/notify');
 
 // ─── @desc    Create a new issue
 // ─── @route   POST /api/issues
@@ -46,6 +47,17 @@ const createIssue = asyncHandler(async (req, res) => {
     { path: 'category', select: 'name icon' },
     { path: 'reportedBy', select: 'name email' },
   ]);
+
+  // ── Notify all admins (fire-and-forget) ─────────────────────────────────
+  // Wrapped in try/catch so any unexpected failure here never prevents the
+  // resident's issue-creation request from returning 201.
+  try {
+    notifyAdminsNewIssue(populated).catch((err) =>
+      console.error('[createIssue] notifyAdminsNewIssue unhandled rejection:', err.message)
+    );
+  } catch (err) {
+    console.error('[createIssue] notifyAdminsNewIssue threw synchronously:', err.message);
+  }
 
   res.status(201).json(populated);
 });

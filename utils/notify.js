@@ -93,4 +93,119 @@ async function notifyStatusChange(issueId, recipientId, newStatus) {
   }
 }
 
-module.exports = { notifyStatusChange };
+/**
+ * notifyAdminsNewIssue(issue)
+ *
+ * Fires after a resident successfully creates a new issue.
+ * For every user with role 'admin' it:
+ *   1. Creates an in-app Notification document.
+ *   2. Sends an email (subject + rich-text body) via the shared transporter.
+ *
+ * Both steps are bundled per admin and the full fan-out uses Promise.allSettled,
+ * so one admin's bad email address (or a transient SMTP hiccup) never stops the
+ * remaining admins from being notified.
+ *
+ * The call site in createIssue wraps this in its own try/catch so that any
+ * unexpected top-level failure here never blocks the HTTP 201 response sent to
+ * the resident — their report always goes through.
+ *
+ * @param {import('../models/Issue')} issue — the freshly saved Issue document
+ *                                            (must have at minimum: _id, issueId,
+ *                                             title, category, severity, reportedBy)
+ */
+async function notifyAdminsNewIssue(issue) {
+  // ── Resolve the human-readable reporter name ─────────────────────────────
+  // `issue.reportedBy` may be an ObjectId (not yet populated) or an object
+  // (already populated by createIssue's .populate() call).  We normalise both.
+  let reporterName = 'a resident';
+  try {
+    if (issue.reportedBy?.name) {
+      reporterName = issue.reportedBy.name;
+    } else if (issue.reportedBy) {
+      const reporter = await User.findById(issue.reportedBy).select('name').lean();
+      if (reporter?.name) reporterName = reporter.name;
+    }
+  } catch {
+    // Non-critical — fall back to the generic label
+  }
+
+  // ── Resolve a readable category label ───────────────────────────────────
+  // category may be populated (object with .name) or still an ObjectId.
+  const categoryLabel =
+    typeof issue.category === 'object' && issue.category?.name
+      ? issue.category.name
+      : String(issue.category);
+
+  const issueLink = `${process.env.CLIENT_URL || 'http://localhost:5173'}/issue/${issue._id}`;
+
+  // ── Fetch all admins ─────────────────────────────────────────────────────
+  const admins = await User.find({ role: 'admin' }).select('_id name email').lean();
+
+  if (!admins.length) return; // nothing to do
+
+  const smtpConfigured = !!(process.env.SMTP_HOST && process.env.SMTP_USER);
+  const isEthereal = smtpConfigured &&
+    (process.env.SMTP_HOST || '').toLowerCase().includes('ethereal');
+
+  // ── Build one promise per admin ──────────────────────────────────────────
+  const tasks = admins.map(async (admin) => {
+    // 1. In-app notification
+    await Notification.create({
+      recipient: admin._id,
+      issue:     issue._id,
+      message:   `New issue reported: ${issue.issueId} — ${issue.title}`,
+    });
+
+    // 2. Email (skip gracefully if SMTP is not configured)
+    if (!smtpConfigured || !admin.email) return;
+
+    const subject = `CivicFix — New issue reported: ${issue.issueId}`;
+    const text = [
+      `Hi ${admin.name || 'Admin'},`,
+      '',
+      'A new civic issue has just been reported on CivicFix and needs your attention.',
+      '',
+      `  Issue ID : ${issue.issueId}`,
+      `  Title    : ${issue.title}`,
+      `  Category : ${categoryLabel}`,
+      `  Severity : ${issue.severity || 'Not specified'}`,
+      `  Reported by: ${reporterName}`,
+      '',
+      'View and manage the issue here:',
+      `  ${issueLink}`,
+      '',
+      '— The CivicFix System',
+    ].join('\n');
+
+    const info = await transporter.sendMail({
+      from:    FROM_ADDRESS,
+      to:      admin.email,
+      subject,
+      text,
+    });
+
+    if (isEthereal) {
+      const { getTestMessageUrl } = require('nodemailer');
+      const previewUrl = getTestMessageUrl(info);
+      if (previewUrl) {
+        console.log(`[notify] 📧  Ethereal preview (admin ${admin.email}) → ${previewUrl}`);
+      }
+    } else {
+      console.log(`[notify] 📧  New-issue email sent to admin ${admin.email} (messageId: ${info.messageId})`);
+    }
+  });
+
+  // ── Fan-out with allSettled — one failure must not block the others ───────
+  const results = await Promise.allSettled(tasks);
+
+  results.forEach((result, idx) => {
+    if (result.status === 'rejected') {
+      console.error(
+        `[notify] admin notification failed for ${admins[idx]?.email ?? admins[idx]?._id}:`,
+        result.reason?.message ?? result.reason
+      );
+    }
+  });
+}
+
+module.exports = { notifyStatusChange, notifyAdminsNewIssue };
