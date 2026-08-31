@@ -314,4 +314,153 @@ async function notifyStaffAssignment(staffUserId, issues) {
   }
 }
 
-module.exports = { notifyStatusChange, notifyAdminsNewIssue, notifyStaffAssignment };
+/**
+ * notifyAdminsEmergency(report)
+ *
+ * Fires immediately after an EmergencyReport is successfully saved.
+ * Sends BOTH an in-app notification AND an email to every admin user.
+ *
+ * Deliberately distinct from notifyAdminsNewIssue:
+ *   - Notification is marked  priority: 'urgent'  and  category: 'emergency'
+ *     so the NotificationBell can render it with a red accent rather than the
+ *     grey/blue used for routine pothole or streetlight reports.
+ *   - Email subject is prefixed with the 🚨 emoji and the word URGENT to survive
+ *     even a heavily filtered inbox.
+ *   - No `issue` ref is set on the Notification document — EmergencyReport is
+ *     a separate collection from Issue.
+ *
+ * Fan-out uses Promise.allSettled so one admin's bad email address or SMTP
+ * hiccup never prevents the remaining admins from being alerted.
+ *
+ * ⚠️  PRODUCTION DEPLOYMENT NOTE:
+ *   Email is insufficient as the sole alerting channel for an active emergency.
+ *   Email response times (minutes to hours) are too slow for an armed robbery,
+ *   medical emergency, or active threat.  A production deployment MUST layer in
+ *   SMS (e.g. Twilio) or an automated phone call to an on-call admin immediately
+ *   after this function.  Email is retained here only as a secondary record, not
+ *   as the primary alert mechanism.
+ *
+ * @param {import('../models/EmergencyReport')} report — the freshly saved
+ *   EmergencyReport document.  Must have at minimum: _id, type, description,
+ *   location (address), reporter (ObjectId or populated object with name/email).
+ */
+async function notifyAdminsEmergency(report) {
+  // ── Resolve reporter identity ─────────────────────────────────────────────────
+  // `report.reporter` may be a populated object (if createEmergencyReport ran
+  // populate after save) or a raw ObjectId.  Normalise both paths.
+  let reporterName  = 'Unknown reporter';
+  let reporterEmail = 'N/A';
+  try {
+    if (report.reporter?.name) {
+      reporterName  = report.reporter.name;
+      reporterEmail = report.reporter.email || 'N/A';
+    } else if (report.reporter) {
+      const reporter = await User.findById(report.reporter)
+        .select('name email')
+        .lean();
+      if (reporter) {
+        reporterName  = reporter.name  || reporterName;
+        reporterEmail = reporter.email || reporterEmail;
+      }
+    }
+  } catch {
+    // Non-critical — fall back to the generic labels
+  }
+
+  // ── Fetch all admins ───────────────────────────────────────────────────────────
+  const admins = await User.find({ role: 'admin' }).select('_id name email').lean();
+  if (!admins.length) return;
+
+  const smtpConfigured = !!(process.env.SMTP_HOST && process.env.SMTP_USER);
+  const isEthereal = smtpConfigured &&
+    (process.env.SMTP_HOST || '').toLowerCase().includes('ethereal');
+
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+  // Link to the admin emergency-reports dashboard (not the generic issue page)
+  const reportLink = `${clientUrl}/admin/emergency-reports`;
+
+  // ── Build one promise per admin ─────────────────────────────────────────────
+  const tasks = admins.map(async (admin) => {
+    // 1. In-app notification — urgent styling, no Issue ref
+    await Notification.create({
+      recipient: admin._id,
+      // `issue` intentionally omitted — EmergencyReport is a separate collection
+      message:   `🚨 URGENT: New emergency report — ${report.type} — check immediately`,
+      priority:  'urgent',
+      category:  'emergency',
+    });
+
+    // 2. Email (skip gracefully if SMTP is not configured)
+    if (!smtpConfigured || !admin.email) return;
+
+    const subject = `🚨 CivicFix — Urgent Emergency Report: ${report.type}`;
+    const text = [
+      `Hi ${admin.name || 'Admin'},`,
+      '',
+      '*** URGENT ACTION REQUIRED ***',
+      '',
+      'A new emergency report has been submitted on CivicFix and requires',
+      'your immediate attention.',
+      '',
+      '=== REPORT DETAILS ===',
+      `  Type        : ${report.type}`,
+      `  Description : ${report.description}`,
+      `  Location    : ${report.location?.address || 'Not specified'}`,
+      `  Reporter    : ${reporterName}`,
+      `  Contact     : ${reporterEmail}`,
+      `  Submitted   : ${new Date(report.createdAt || Date.now()).toUTCString()}`,
+      '',
+      'View and manage all emergency reports here:',
+      `  ${reportLink}`,
+      '',
+      '--- PRODUCTION DEPLOYMENT NOTE ---',
+      'This email is a secondary notification channel only.',
+      'For a live deployment, SMS or an automated phone call to an on-call',
+      'admin is essential — email response times are too slow for an active',
+      'emergency. This gap must be addressed before going to production.',
+      '',
+      '— The CivicFix System',
+    ].join('\n');
+
+    const info = await transporter.sendMail({
+      from:    FROM_ADDRESS,
+      to:      admin.email,
+      subject,
+      text,
+    });
+
+    if (isEthereal) {
+      const { getTestMessageUrl } = require('nodemailer');
+      const previewUrl = getTestMessageUrl(info);
+      if (previewUrl) {
+        console.log(`[notify] 🚨  Ethereal preview (emergency → admin ${admin.email}) → ${previewUrl}`);
+      }
+    } else {
+      console.log(
+        `[notify] 🚨  Emergency alert email sent to admin ${admin.email}` +
+        ` (messageId: ${info.messageId})`
+      );
+    }
+  });
+
+  // ── Fan-out with allSettled — one failure must never block the others ──────
+  const results = await Promise.allSettled(tasks);
+
+  results.forEach((result, idx) => {
+    if (result.status === 'rejected') {
+      console.error(
+        `[notify] emergency alert failed for admin ${
+          admins[idx]?.email ?? admins[idx]?._id
+        }:`,
+        result.reason?.message ?? result.reason
+      );
+    }
+  });
+}
+
+module.exports = {
+  notifyStatusChange,
+  notifyAdminsNewIssue,
+  notifyStaffAssignment,
+  notifyAdminsEmergency,
+};

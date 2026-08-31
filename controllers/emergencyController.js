@@ -1,7 +1,8 @@
-const asyncHandler      = require('express-async-handler');
-const mongoose          = require('mongoose');
-const EmergencyReport   = require('../models/EmergencyReport');
-const cloudinary        = require('../config/cloudinary');
+const asyncHandler            = require('express-async-handler');
+const mongoose                = require('mongoose');
+const EmergencyReport         = require('../models/EmergencyReport');
+const cloudinary              = require('../config/cloudinary');
+const { notifyAdminsEmergency } = require('../utils/notify');
 
 // ─── cleanupFiles ─────────────────────────────────────────────────────────────
 // Deletes every asset in `files` from Cloudinary using Promise.allSettled so a
@@ -154,6 +155,23 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
     media,
     status: 'New',
   });
+
+  // Notify all admins (fire-and-forget) ──────────────────────────────────
+  // Wrapped in try/catch + .catch() so any failure here never prevents the
+  // 201 response from reaching the reporter — their submission always succeeds.
+  try {
+    notifyAdminsEmergency(report).catch((err) =>
+      console.error(
+        '[createEmergencyReport] notifyAdminsEmergency unhandled rejection:',
+        err.message
+      )
+    );
+  } catch (err) {
+    console.error(
+      '[createEmergencyReport] notifyAdminsEmergency threw synchronously:',
+      err.message
+    );
+  }
 
   res.status(201).json(report);
 });
