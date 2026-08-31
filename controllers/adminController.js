@@ -3,7 +3,7 @@ const mongoose                = require('mongoose');
 const Issue                   = require('../models/Issue');
 const User                    = require('../models/User');
 const Category                = require('../models/Category');
-const { notifyStatusChange }  = require('../utils/notify');
+const { notifyStatusChange, notifyStaffAssignment } = require('../utils/notify');
 const { logStatusChange }     = require('../utils/auditLog');
 const { changeIssueStatus }   = require('../utils/issueStatusHelper');
 
@@ -464,6 +464,12 @@ const assignIssue = asyncHandler(async (req, res) => {
     { path: 'assignedTo', select: 'name email' },
   ]);
 
+  // Notify the assigned staff member (fire-and-forget — errors are caught
+  // inside notifyStaffAssignment and must never block this response).
+  notifyStaffAssignment(staffId, [issue]).catch((err) =>
+    console.error('[assignIssue] notifyStaffAssignment unhandled rejection:', err.message)
+  );
+
   res.status(200).json(issue);
 });
 
@@ -544,8 +550,11 @@ const bulkAssignIssues = asyncHandler(async (req, res) => {
     throw new Error('The provided user either does not exist or is not a staff member');
   }
 
-  const succeeded = [];
-  const skipped   = [];
+  // succeededIssues collects the actual Issue documents (not just id strings)
+  // so notifyStaffAssignment has all the data it needs for the consolidated email.
+  const succeeded       = [];
+  const succeededIssues = [];
+  const skipped         = [];
 
   // Process issues sequentially rather than in parallel: each save + notify +
   // audit is a chain of async calls; parallelising them risks hitting Atlas
@@ -554,13 +563,13 @@ const bulkAssignIssues = asyncHandler(async (req, res) => {
     const issue = await Issue.findById(issueId);
 
     if (!issue) {
-      // Not found — count as skipped with a note; don’t fail the whole batch
+      // Not found — count as skipped with a note; don't fail the whole batch
       skipped.push({ id: issueId, reason: 'not found' });
       continue;
     }
 
     if (issue.status === 'Resolved') {
-      // Skip resolved issues — reassigning doesn’t make sense once done
+      // Skip resolved issues — reassigning doesn't make sense once done
       skipped.push({ id: issueId, reason: 'already resolved' });
       continue;
     }
@@ -573,6 +582,15 @@ const bulkAssignIssues = asyncHandler(async (req, res) => {
     });
 
     succeeded.push(issueId);
+    succeededIssues.push(issue); // retain the document for the consolidated notify
+  }
+
+  // ONE notification + ONE email for the whole batch — only if at least one
+  // issue was actually assigned.  Errors inside are caught by the helper itself.
+  if (succeededIssues.length > 0) {
+    notifyStaffAssignment(staffId, succeededIssues).catch((err) =>
+      console.error('[bulkAssignIssues] notifyStaffAssignment unhandled rejection:', err.message)
+    );
   }
 
   res.status(200).json({ succeeded, skipped });

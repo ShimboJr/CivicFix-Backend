@@ -208,4 +208,110 @@ async function notifyAdminsNewIssue(issue) {
   });
 }
 
-module.exports = { notifyStatusChange, notifyAdminsNewIssue };
+/**
+ * notifyStaffAssignment(staffUserId, issues)
+ *
+ * Fires once after an admin assigns one or more issues to a staff member.
+ * Regardless of how many issues are in the batch it creates:
+ *   - ONE Notification document (in-app) for the staff member
+ *   - ONE email listing every assigned issue
+ *
+ * This deliberately avoids per-issue calls so that a bulk assignment of N
+ * issues never produces N separate emails / bell entries for the assignee.
+ *
+ * @param {string|ObjectId}                 staffUserId — the staff user's _id
+ * @param {Array<import('../models/Issue')>} issues      — array of Issue docs
+ *                                                         (length ≥ 1)
+ */
+async function notifyStaffAssignment(staffUserId, issues) {
+  if (!issues || issues.length === 0) return;
+
+  try {
+    // ── Build the human-readable message ──────────────────────────────────
+    let message;
+    if (issues.length === 1) {
+      const i = issues[0];
+      message = `You've been assigned to issue ${i.issueId} — ${i.title}`;
+    } else {
+      const idList = issues.map((i) => i.issueId).join(', ');
+      message = `You've been assigned ${issues.length} new issues: ${idList}`;
+    }
+
+    // ── 1. In-app Notification (one document for the whole batch) ─────────
+    await Notification.create({
+      recipient: staffUserId,
+      // For a multi-issue batch we reference the first issue; the message
+      // lists all of them so the staff member knows what arrived.
+      issue:   issues[0]._id,
+      message,
+    });
+
+    // ── 2. Email (skip gracefully if SMTP is not configured) ──────────────
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) return;
+
+    const staffUser = await User.findById(staffUserId).select('name email').lean();
+    if (!staffUser?.email) return; // no email address on record
+
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+    const isEthereal = (process.env.SMTP_HOST || '').toLowerCase().includes('ethereal');
+
+    // Build one line per issue inside the email body
+    const issueLines = issues.map((i) => {
+      // category may be a populated object or a raw ObjectId
+      const catLabel =
+        typeof i.category === 'object' && i.category?.name
+          ? i.category.name
+          : String(i.category);
+
+      const link = `${clientUrl}/staff/issue/${i._id}`;
+
+      return [
+        `  • ${i.issueId} — ${i.title}`,
+        `    Category : ${catLabel}`,
+        `    Severity : ${i.severity || 'Not specified'}`,
+        `    Link     : ${link}`,
+      ].join('\n');
+    });
+
+    const subject =
+      issues.length === 1
+        ? `CivicFix — You've been assigned issue ${issues[0].issueId}`
+        : `CivicFix — You've been assigned ${issues.length} new issues`;
+
+    const text = [
+      `Hi ${staffUser.name || 'there'},`,
+      '',
+      issues.length === 1
+        ? 'An issue has been assigned to you on CivicFix:'
+        : `${issues.length} issues have been assigned to you on CivicFix:`,
+      '',
+      ...issueLines,
+      '',
+      'Please log in to review and action your assignments.',
+      '',
+      '— The CivicFix Team',
+    ].join('\n');
+
+    const info = await transporter.sendMail({
+      from:    FROM_ADDRESS,
+      to:      staffUser.email,
+      subject,
+      text,
+    });
+
+    if (isEthereal) {
+      const { getTestMessageUrl } = require('nodemailer');
+      const previewUrl = getTestMessageUrl(info);
+      if (previewUrl) {
+        console.log(`[notify] 📧  Ethereal preview (staff ${staffUser.email}) → ${previewUrl}`);
+      }
+    } else {
+      console.log(`[notify] 📧  Assignment email sent to ${staffUser.email} (messageId: ${info.messageId})`);
+    }
+  } catch (err) {
+    // Non-critical — log but never throw; assignment must always succeed
+    console.error('[notify] notifyStaffAssignment failed:', err.message);
+  }
+}
+
+module.exports = { notifyStatusChange, notifyAdminsNewIssue, notifyStaffAssignment };
