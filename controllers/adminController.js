@@ -3,8 +3,8 @@ const mongoose            = require('mongoose');
 const Issue               = require('../models/Issue');
 const User                = require('../models/User');
 const Category            = require('../models/Category');
-const Comment             = require('../models/Comment');
 const { notifyStatusChange } = require('../utils/notify');
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  DASHBOARD & ANALYTICS

@@ -1,0 +1,61 @@
+# .github/workflows/ci.yml  (CivicFix-Backend)
+#
+# Runs ESLint and the Jest test suite on every push and pull_request to main.
+#
+# NOTE — monorepo context:
+#   The frontend lives in a separate repository (CivicFix-Frontend) and has its
+#   own CI workflow there.  This workflow covers the backend only.
+#
+# NOTE — path filtering:
+#   All steps run on every push regardless of which files changed.  Path-based
+#   filtering would speed things up but isn't worth the added complexity at this
+#   project's current size.
+
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Lint + Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'          # LTS — matches the project's target runtime
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        # Env vars that must exist so modules don't crash on missing values at
+        # import time.  These are NOT real secrets — they are stubs.  Tests use
+        # mongodb-memory-server for an isolated in-memory database and never call
+        # Cloudinary, send real emails, or touch the Atlas cluster.
+        env:
+          NODE_ENV:               test
+          JWT_SECRET:             ci_test_secret
+          JWT_EXPIRES_IN:         1h
+          CLOUDINARY_CLOUD_NAME:  test
+          CLOUDINARY_API_KEY:     test
+          CLOUDINARY_API_SECRET:  test
+          EMAIL_HOST:             localhost
+          EMAIL_PORT:             "1025"
+          EMAIL_USER:             test@localhost
+          EMAIL_PASS:             test
+          CLIENT_URL:             http://localhost:5173
+        run: npm test

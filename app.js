@@ -122,7 +122,6 @@ app.use((_req, res) => {
 });
 
 // ─── Global Error Handler ─────────────────────────────────────────────────────
-// eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   // Default to 500 if the response status is still 200 (uncaught throw)
   const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
