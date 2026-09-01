@@ -133,14 +133,23 @@ const loginValidationRules = [
 /**
  * Validates POST /api/issues.
  *
- * IMPORTANT — middleware order on this route:
- *   protect → uploadArray → createIssueValidationRules
- *     → handleUploadValidationErrors → createIssue
+ * Middleware order on this route:
+ *   protect → createIssueValidationRules → handleValidationErrors → createIssue
  *
- * Multer must run first on multipart/form-data requests because req.body is
- * empty until the stream is parsed — so validation runs after the upload.
- * handleUploadValidationErrors then cleans up any Cloudinary assets that were
- * already created if validation subsequently fails.
+ * The body is plain JSON (Content-Type: application/json) — images are uploaded
+ * directly from the browser to Cloudinary before this endpoint is called, so
+ * file bytes never reach the serverless function.  Because express.json() fully
+ * parses the body before any middleware runs, validation can sit in the normal
+ * position (no Multer ordering constraint).  handleValidationErrors is used
+ * here (not handleUploadValidationErrors) because there are no server-side
+ * Cloudinary uploads to clean up on a validation failure.
+ *
+ * Historical note: when this route used multipart/form-data + Multer, the
+ * order was: protect → uploadArray → parseLocation → createIssueValidationRules
+ * → handleUploadValidationErrors → createIssue.  That ordering is no longer
+ * required or correct for this route.  The general lesson — multipart requests
+ * are not parsed by express.json() — still applies to any future route that
+ * keeps real file uploads through the backend (e.g. staffRoutes /proof).
  */
 const createIssueValidationRules = [
   body('title')

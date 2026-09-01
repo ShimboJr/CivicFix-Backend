@@ -9,7 +9,6 @@ const { notifyAdminsEmergency } = require('../utils/notify');
 // The server re-fetches this from Cloudinary's Admin API for every video in the
 // submitted media array — the client-reported value is NEVER trusted.
 const MAX_VIDEO_DURATION_SECONDS = 16;
-const UPLOAD_FOLDER              = 'civicfix/emergency-reports';
 
 // ─── Static emergency-number dataset ──────────────────────────────────────────
 // Loaded once at startup; never queried from an LLM — every entry in this file
@@ -60,40 +59,6 @@ const cleanupFiles = async (mediaItems = []) => {
 //    - No endpoint exposing another resident's reports to them
 // ══════════════════════════════════════════════════════════════════════════════
 
-
-// ─── @desc    Return a signed payload for a direct browser-to-Cloudinary upload
-// ─── @route   GET /api/emergency-reports/upload-signature
-// ─── @access  Private (any authenticated user)
-//
-// The browser uses these five values to POST a file directly to:
-//   https://api.cloudinary.com/v1_1/{cloudName}/auto/upload
-// File bytes never pass through the serverless function, which sidesteps
-// Vercel's platform-level ~4.5 MB request body limit entirely.
-//
-// Security notes:
-//   - `apiSecret` is used only to compute the HMAC signature; it is NEVER
-//     included in the response.
-//   - The signature covers both `timestamp` and `folder`, so a captured
-//     signature cannot be reused for a different folder or after it expires.
-//   - Signatures are valid for ~1 hour on Cloudinary's side; the timestamp
-//     is included so Cloudinary can enforce that window server-side.
-const getUploadSignature = asyncHandler(async (req, res) => {
-  const timestamp  = Math.floor(Date.now() / 1000);
-  const paramsToSign = { timestamp, folder: UPLOAD_FOLDER };
-
-  const signature = cloudinary.utils.api_sign_request(
-    paramsToSign,
-    process.env.CLOUDINARY_API_SECRET
-  );
-
-  res.status(200).json({
-    signature,
-    timestamp,
-    apiKey:    process.env.CLOUDINARY_API_KEY,
-    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-    folder:    UPLOAD_FOLDER,
-  });
-});
 
 
 // ─── @desc    Submit a new emergency report
@@ -540,7 +505,6 @@ const getEmergencyNumber = asyncHandler(async (req, res) => {
 
 
 module.exports = {
-  getUploadSignature,
   createEmergencyReport,
   getMyEmergencyReports,
   getAllEmergencyReports,

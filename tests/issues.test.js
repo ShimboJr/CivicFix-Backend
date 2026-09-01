@@ -3,6 +3,11 @@
  *
  * Integration tests for the /api/issues routes.
  *
+ * POST /api/issues now expects a plain JSON body (Content-Type: application/json)
+ * — images are uploaded directly from the browser to Cloudinary before this
+ * endpoint is called, so there is no multipart/form-data involved.  All
+ * submission tests use supertest's .send() rather than .field()/.attach().
+ *
  * Image uploads are deliberately NOT tested here — doing so would hit the real
  * Cloudinary API (slow, costs real quota, leaves orphaned assets).  A good
  * future step would be to mock the Cloudinary uploader layer (e.g. with
@@ -45,20 +50,20 @@ const registerUser = async (userData = validUser) => {
 };
 
 /**
- * Build a valid issue payload.
- * location is JSON-stringified exactly as the real ReportIssue.jsx frontend
- * does via FormData.append('location', JSON.stringify({...})).
+ * Build a valid issue payload as a plain object for JSON submission.
+ * location is a real nested object — no JSON.stringify needed because the
+ * route now accepts application/json, not multipart/form-data.
  */
 const buildIssuePayload = (categoryId, overrides = {}) => ({
   title:       'Test pothole on main road',
   description: 'There is a large pothole that is causing accidents.',
   category:    categoryId.toString(),
   severity:    'High',
-  location:    JSON.stringify({
+  location: {
     address:   'Ladoke Akintola University of Technology, Ogbomoso',
     latitude:  8.1536,
     longitude: 4.2453,
-  }),
+  },
   ...overrides,
 });
 
@@ -86,16 +91,8 @@ describe('POST /api/issues — create', () => {
     const res = await request(app)
       .post('/api/issues')
       .set('Authorization', `Bearer ${token}`)
-      // Send as multipart (matching the real frontend) but without an image file
-      .field('title',       'Test pothole on main road')
-      .field('description', 'There is a large pothole that is causing accidents.')
-      .field('category',    category._id.toString())
-      .field('severity',    'High')
-      .field('location',    JSON.stringify({
-        address:   'Ladoke Akintola University of Technology, Ogbomoso',
-        latitude:  8.1536,
-        longitude: 4.2453,
-      }));
+      // Plain JSON body — no multipart, no file data
+      .send(buildIssuePayload(category._id));
 
     expect(res.status).toBe(201);
     expect(res.body).toHaveProperty('issueId');
@@ -105,14 +102,13 @@ describe('POST /api/issues — create', () => {
   });
 
   it('returns 400 from the validator when title is missing', async () => {
+    const payload = buildIssuePayload(category._id);
+    delete payload.title;
+
     const res = await request(app)
       .post('/api/issues')
       .set('Authorization', `Bearer ${token}`)
-      .field('description', 'Some description')
-      .field('category',    category._id.toString())
-      .field('severity',    'Medium')
-      .field('location',    JSON.stringify({ address: 'Somewhere', latitude: 0, longitude: 0 }));
-    // title is intentionally omitted
+      .send(payload);
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/title is required/i);
@@ -122,11 +118,7 @@ describe('POST /api/issues — create', () => {
     const res = await request(app)
       .post('/api/issues')
       .set('Authorization', `Bearer ${token}`)
-      .field('title',       'A'.repeat(201))
-      .field('description', 'Some description')
-      .field('category',    category._id.toString())
-      .field('severity',    'Medium')
-      .field('location',    JSON.stringify({ address: 'Somewhere', latitude: 0, longitude: 0 }));
+      .send(buildIssuePayload(category._id, { title: 'A'.repeat(201) }));
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/200 characters/i);
@@ -136,14 +128,28 @@ describe('POST /api/issues — create', () => {
     const res = await request(app)
       .post('/api/issues')
       .set('Authorization', `Bearer ${token}`)
-      .field('title',       'Valid title')
-      .field('description', 'Valid description')
-      .field('category',    category._id.toString())
-      .field('severity',    'Low')
-      .field('location',    JSON.stringify({ address: '', latitude: 0, longitude: 0 }));
+      .send(buildIssuePayload(category._id, {
+        location: { address: '', latitude: 0, longitude: 0 },
+      }));
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/location address is required/i);
+  });
+
+  it('creates an issue with image URLs when provided', async () => {
+    const res = await request(app)
+      .post('/api/issues')
+      .set('Authorization', `Bearer ${token}`)
+      .send(buildIssuePayload(category._id, {
+        images: [
+          'https://res.cloudinary.com/demo/image/upload/sample.jpg',
+          'https://res.cloudinary.com/demo/image/upload/sample2.jpg',
+        ],
+      }));
+
+    expect(res.status).toBe(201);
+    expect(res.body.images).toHaveLength(2);
+    expect(res.body.images[0]).toMatch(/^https:\/\//);
   });
 });
 
@@ -194,24 +200,28 @@ describe('GET /api/issues/my-issues', () => {
     const { token: tokenB } = await registerUser(secondUser);
     const category = await Category.create({ name: 'Electricity', icon: 'bi-lightning' });
 
-    // User A creates one issue, User B creates another
+    // User A creates one issue, User B creates another — plain JSON body
     await request(app)
       .post('/api/issues')
       .set('Authorization', `Bearer ${tokenA}`)
-      .field('title',       'User A issue')
-      .field('description', 'Desc A')
-      .field('category',    category._id.toString())
-      .field('severity',    'Low')
-      .field('location',    JSON.stringify({ address: 'Addr A', latitude: 0, longitude: 0 }));
+      .send({
+        title:       'User A issue',
+        description: 'Desc A',
+        category:    category._id.toString(),
+        severity:    'Low',
+        location:    { address: 'Addr A', latitude: 0, longitude: 0 },
+      });
 
     await request(app)
       .post('/api/issues')
       .set('Authorization', `Bearer ${tokenB}`)
-      .field('title',       'User B issue')
-      .field('description', 'Desc B')
-      .field('category',    category._id.toString())
-      .field('severity',    'Low')
-      .field('location',    JSON.stringify({ address: 'Addr B', latitude: 0, longitude: 0 }));
+      .send({
+        title:       'User B issue',
+        description: 'Desc B',
+        category:    category._id.toString(),
+        severity:    'Low',
+        location:    { address: 'Addr B', latitude: 0, longitude: 0 },
+      });
 
     // User A should only see their own issue
     const res = await request(app)

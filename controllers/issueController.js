@@ -9,10 +9,21 @@ const { notifyAdminsNewIssue } = require('../utils/notify');
 // ─── @desc    Create a new issue
 // ─── @route   POST /api/issues
 // ─── @access  Private (any authenticated user)
+//
+// Body is now plain JSON (Content-Type: application/json).
+// Images are already-uploaded Cloudinary URLs — the browser uploaded file bytes
+// directly to Cloudinary before calling this endpoint, bypassing the serverless
+// function body-size limit entirely.
+//
+//   { title, description, category, severity,
+//     location: { address, latitude, longitude },
+//     images: ['https://res.cloudinary.com/…', …]   ← optional, max 5 }
 const createIssue = asyncHandler(async (req, res) => {
   const { title, description, category, severity } = req.body;
 
-  // location can arrive as nested JSON or flat fields
+  // location arrives as a real nested JSON object — express.json() handles it.
+  // The JSON.parse fallback is kept as a safety net for any legacy callers that
+  // still stringify the field, but it is no longer the primary path.
   let location;
   try {
     location =
@@ -29,9 +40,11 @@ const createIssue = asyncHandler(async (req, res) => {
     throw new Error('Please provide title, description, category, and location.address');
   }
 
-  // Map each uploaded file to its Cloudinary URL
-  // multer-storage-cloudinary places the full HTTPS URL on f.path
-  const images = req.files ? req.files.map((f) => f.path) : [];
+  // `images` is an array of Cloudinary URLs submitted as plain JSON.
+  // Normalise to [] when absent (report with no photos attached).
+  const images = Array.isArray(req.body.images)
+    ? req.body.images.filter((u) => typeof u === 'string' && u.startsWith('http'))
+    : [];
 
   const issue = await Issue.create({
     title,

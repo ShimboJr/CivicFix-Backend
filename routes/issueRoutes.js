@@ -16,10 +16,8 @@ const {
 } = require('../controllers/issueController');
 
 const { protect, authorize } = require('../middleware/authMiddleware');
-const { uploadArray }        = require('../middleware/uploadMiddleware');
-const { parseLocation }      = require('../middleware/parseLocation');
 const {
-  handleUploadValidationErrors,
+  handleValidationErrors,
   createIssueValidationRules,
 } = require('../middleware/validators');
 
@@ -37,29 +35,25 @@ router.get('/my-issues', protect, getMyIssues);
 router.get('/nearby', getNearbyIssues);
 
 // GET  /api/issues             — public, filterable, paginated
-// POST /api/issues             — create issue (authenticated + upload + validation)
+// POST /api/issues             — create issue (authenticated + JSON body + validation)
 //
-// Middleware order rationale:
-//   1. protect           — reject unauthenticated requests first (cheap)
-//   2. uploadArray       — Multer must run before anything reads req.body;
-//                          multipart/form-data is opaque until Multer parses it
-//   3. parseLocation     — rehydrates req.body.location from the JSON string
-//                          the frontend appends via FormData.append('location',
-//                          JSON.stringify({...})) so the validator can read
-//                          location.address as a nested property
-//   4. createIssueValidationRules + handleUploadValidationErrors
-//                        — validate fields; clean up any Cloudinary uploads
-//                          before returning 400 if validation fails
-//   5. createIssue       — controller (only reached on a fully-valid request)
+// Body is now plain JSON — Multer is no longer on this route.
+// Middleware order:
+//   1. protect                  — reject unauthenticated requests first (cheap)
+//   2. createIssueValidationRules — validate the JSON body fields
+//   3. handleValidationErrors   — return 400 with field details if any rule fails
+//   4. createIssue              — controller (only reached on a fully-valid request)
+//
+// Note: parseLocation and handleUploadValidationErrors are no longer needed here
+// because location is a real nested object in a JSON body and there are no
+// Multer-uploaded files to clean up on validation failure.
 router
   .route('/')
   .get(getIssues)
   .post(
     protect,
-    uploadArray,
-    parseLocation,
     createIssueValidationRules,
-    handleUploadValidationErrors,
+    handleValidationErrors,
     createIssue,
   );
 

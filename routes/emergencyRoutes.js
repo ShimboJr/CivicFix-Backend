@@ -4,7 +4,6 @@ const router  = express.Router();
 const { protect, authorize } = require('../middleware/authMiddleware');
 
 const {
-  getUploadSignature,
   createEmergencyReport,
   getMyEmergencyReports,
   getAllEmergencyReports,
@@ -18,12 +17,13 @@ const {
 //  /api/emergency-reports
 //
 //  Visibility contract (mirroring the controller comment):
-//    GET   /upload-signature → any authenticated user    (protect)
 //    POST  /                 → any authenticated user    (protect)
 //    GET   /my-reports       → any authenticated user    (protect)  — own reports only
 //    GET   /                 → admin only                (protect + authorize('admin'))
 //    PUT   /:id/acknowledge  → admin only                (protect + authorize('admin'))
 //    PUT   /:id/status       → admin only                (protect + authorize('admin'))
+//
+//  Upload signatures are now served from GET /api/uploads/signature?folder=civicfix/emergency-reports
 //
 //  Deliberately missing:
 //    - No public GET
@@ -42,16 +42,9 @@ const {
 router.get('/emergency-number', getEmergencyNumber);
 
 // ── Reporter-accessible routes (any authenticated user) ───────────────────────
-// IMPORTANT: literal-string paths (/upload-signature, /my-reports) MUST be
+// IMPORTANT: literal-string paths (/my-reports) MUST be
 // declared BEFORE /:id so Express does not try to match those strings as
 // MongoDB ObjectIds.
-
-// GET /upload-signature
-//   Returns a server-signed payload for a direct browser-to-Cloudinary upload.
-//   File bytes never pass through this serverless function, which sidesteps
-//   Vercel's platform-level ~4.5 MB request body limit.
-//   Returns: { signature, timestamp, apiKey, cloudName, folder }
-router.get('/upload-signature', protect, getUploadSignature);
 
 // POST /
 //   Accepts a plain JSON body:
