@@ -458,6 +458,99 @@ const updateReportStatus = asyncHandler(async (req, res) => {
 });
 
 
+// ─── @desc    Operational stats for the admin monitoring strip
+// ─── @route   GET /api/emergency-reports/stats
+// ─── @access  Private, admin only
+//
+// Returns three metrics in a single round-trip (all computed inside MongoDB
+// via $facet so they run in parallel):
+//
+//   avgAckMinutes  — average minutes between createdAt and acknowledgedAt
+//                    for all reports where acknowledgedAt is set.
+//                    null when no reports have been acknowledged yet.
+//
+//   staleNewCount  — number of reports still in 'New' status that were
+//                    submitted more than STALE_MINUTES ago (10 min, matching
+//                    the threshold already used on individual report cards).
+//
+//   byType         — [{ type, count }] for ALL reports regardless of status,
+//                    sorted by count descending.  Used as a short type-breakdown
+//                    list in the stats strip.
+const STATS_STALE_MINUTES = 10;
+
+const getEmergencyStats = asyncHandler(async (_req, res) => {
+  const staleThreshold = new Date(Date.now() - STATS_STALE_MINUTES * 60 * 1000);
+
+  const [result] = await EmergencyReport.aggregate([
+    {
+      $facet: {
+        // ── Facet 1: average acknowledgment time ──────────────────────────
+        // Filter to reports that have been acknowledged (acknowledgedAt exists),
+        // compute the diff in milliseconds, then average and convert to minutes.
+        ackTime: [
+          { $match: { acknowledgedAt: { $exists: true, $ne: null } } },
+          {
+            $group: {
+              _id: null,
+              avgMs: {
+                $avg: {
+                  $subtract: ['$acknowledgedAt', '$createdAt'],
+                },
+              },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              avgMinutes: {
+                $round: [{ $divide: ['$avgMs', 60000] }, 1],
+              },
+            },
+          },
+        ],
+
+        // ── Facet 2: stale unacknowledged reports ─────────────────────────
+        // 'New' reports older than STATS_STALE_MINUTES minutes.
+        staleNew: [
+          {
+            $match: {
+              status:    'New',
+              createdAt: { $lt: staleThreshold },
+            },
+          },
+          { $count: 'count' },
+        ],
+
+        // ── Facet 3: count by type ────────────────────────────────────────
+        // All reports, grouped by type, sorted by volume descending.
+        byType: [
+          {
+            $group: {
+              _id:   '$type',
+              count: { $sum: 1 },
+            },
+          },
+          { $sort: { count: -1 } },
+          {
+            $project: {
+              _id:   0,
+              type:  '$_id',
+              count: 1,
+            },
+          },
+        ],
+      },
+    },
+  ]);
+
+  res.status(200).json({
+    avgAckMinutes:  result.ackTime[0]?.avgMinutes ?? null,
+    staleNewCount:  result.staleNew[0]?.count     ?? 0,
+    byType:         result.byType,
+  });
+});
+
+
 // ─── @desc    Look up emergency telephone numbers for a country (public)
 // ─── @route   GET /api/emergency-reports/emergency-number?country=XX
 // ─── @access  Public — no auth required (call before login is possible)
@@ -512,4 +605,5 @@ module.exports = {
   acknowledgeReport,
   updateReportStatus,
   getEmergencyNumber,
+  getEmergencyStats,
 };

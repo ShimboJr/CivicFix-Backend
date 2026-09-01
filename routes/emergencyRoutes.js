@@ -11,6 +11,7 @@ const {
   acknowledgeReport,
   updateReportStatus,
   getEmergencyNumber,
+  getEmergencyStats,
 } = require('../controllers/emergencyController');
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -61,6 +62,15 @@ router.get('/my-reports', protect, getMyEmergencyReports);
 // ── Admin-only routes ─────────────────────────────────────────────────────────
 // All of the following require both authentication AND the 'admin' role.
 // A 'staff' user who passes `protect` will be rejected at `authorize('admin')`.
+//
+// IMPORTANT: literal-string routes (/stats) MUST appear before /:id so Express
+// does not try to coerce the string "stats" into a MongoDB ObjectId.
+//
+// GET /stats
+//   Returns a single-response operational summary:
+//     { avgAckMinutes, staleNewCount, byType: [{ type, count }] }
+//   Used by the AdminEmergencyReports page header strip.
+router.get('/stats',                   protect, authorize('admin'), getEmergencyStats);
 router.get('/',                        protect, authorize('admin'), getAllEmergencyReports);
 router.get('/:id',                     protect, authorize('admin'), getEmergencyReportById);
 router.put('/:id/acknowledge',         protect, authorize('admin'), acknowledgeReport);
