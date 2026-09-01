@@ -18,7 +18,8 @@ const getMyNotifications = asyncHandler(async (req, res) => {
       .sort({ createdAt: -1 })
       .skip((page - 1) * PAGE_SIZE)
       .limit(PAGE_SIZE)
-      .populate('issue', 'issueId title')
+      .populate('issue',           'issueId title')
+      .populate('emergencyReport', 'type')
       .lean(),
     Notification.countDocuments(filter),
     // unreadCount is always the total unread regardless of the current filter

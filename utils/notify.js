@@ -376,18 +376,23 @@ async function notifyAdminsEmergency(report) {
     (process.env.SMTP_HOST || '').toLowerCase().includes('ethereal');
 
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
-  // Link to the admin emergency-reports dashboard (not the generic issue page)
-  const reportLink = `${clientUrl}/admin/emergency-reports`;
+  // Deep-link directly to this specific report's EmergencyDetail page so the
+  // admin can open it in one click from the email.
+  const reportLink = `${clientUrl}/admin/emergency-reports/${report._id}`;
 
   // ── Build one promise per admin ─────────────────────────────────────────────
   const tasks = admins.map(async (admin) => {
-    // 1. In-app notification — urgent styling, no Issue ref
+    // 1. In-app notification — urgent styling, emergencyReport ref (NOT issue ref).
+    //    We store the report's _id in `emergencyReport` rather than `issue` because
+    //    `issue` is a Mongoose ref to the Issue collection — populating an
+    //    EmergencyReport ObjectId through it always resolves to null, which the
+    //    frontend interprets as a deleted issue and shows "(issue no longer available)".
     await Notification.create({
-      recipient: admin._id,
-      // `issue` intentionally omitted — EmergencyReport is a separate collection
-      message:   `🚨 URGENT: New emergency report — ${report.type} — check immediately`,
-      priority:  'urgent',
-      category:  'emergency',
+      recipient:       admin._id,
+      emergencyReport: report._id,   // ← correct field; `issue` left absent
+      message:         `🚨 URGENT: New emergency report — ${report.type} — check immediately`,
+      priority:        'urgent',
+      category:        'emergency',
     });
 
     // 2. Email (skip gracefully if SMTP is not configured)

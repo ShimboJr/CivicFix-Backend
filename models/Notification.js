@@ -3,14 +3,21 @@ const mongoose = require('mongoose');
 /**
  * Notification — stores in-app alerts for a single user.
  *
- * Used for three distinct notification paths:
- *   1. Issue status changes     → recipient is the reporter; issue is set
- *   2. New issue (admin)        → recipient is an admin; issue is the new issue
- *   3. Emergency report (admin) → recipient is an admin; issue is absent;
+ * Used for four distinct notification paths:
+ *   1. Issue status changes     → recipient is reporter; `issue` is set
+ *   2. New issue (admin)        → recipient is an admin; `issue` is the new issue
+ *   3. Staff assignment         → recipient is staff;   `issue` is the first assigned issue
+ *   4. Emergency report (admin) → recipient is an admin; `emergencyReport` is set;
+ *                                  `issue` is intentionally absent;
  *                                  priority is 'urgent'; category is 'emergency'
  *
- * `issue` is intentionally optional (required: false) to support path 3 above.
- * All existing callers that always supply an issue ref continue to work unchanged.
+ * WHY TWO SEPARATE OPTIONAL FIELDS:
+ *   `issue` is a Mongoose ref pointing at the Issue collection.  Storing an
+ *   EmergencyReport ObjectId there causes Mongoose's populate() to look for a
+ *   matching Issue document, find nothing, and return null — triggering the
+ *   "(issue no longer available)" fallback in the frontend even for a perfectly
+ *   healthy emergency report.  The fix is a separate `emergencyReport` field
+ *   pointing at the correct collection.
  *
  * `priority` lets the NotificationBell apply a red/urgent accent to emergency
  * notifications so they stand out visually from routine civic-issue reports.
@@ -26,12 +33,23 @@ const notificationSchema = new mongoose.Schema(
       required: true,
       index:    true,          // fast lookup by user
     },
-    // Optional — absent for emergency-report notifications which have no
-    // corresponding Issue document.  Required for all other notification types.
+    // Optional — absent for emergency-report notifications (path 4 above).
+    // Required for all other notification types (paths 1–3).
     issue: {
       type:     mongoose.Schema.Types.ObjectId,
       ref:      'Issue',
-      required: false,         // was `required: true` — relaxed for emergency path
+      required: false,
+      default:  undefined,
+    },
+
+    // Set ONLY for emergency-report notifications (path 4).
+    // Stored separately from `issue` because `issue` is a ref to the Issue
+    // collection — populating an EmergencyReport ObjectId through it always
+    // returns null and triggers the "no longer available" fallback incorrectly.
+    emergencyReport: {
+      type:     mongoose.Schema.Types.ObjectId,
+      ref:      'EmergencyReport',
+      required: false,
       default:  undefined,
     },
     message: {
