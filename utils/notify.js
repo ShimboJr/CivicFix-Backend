@@ -408,6 +408,9 @@ async function notifyAdminsEmergency(report) {
       `  Location    : ${report.location?.address || 'Not specified'}`,
       `  Reporter    : ${reporterName}`,
       `  Contact     : ${reporterEmail}`,
+      // Only include the phone line when a number was provided — avoids a
+      // confusing "Phone : undefined" or "Phone : N/A" line in the email.
+      ...(report.contactPhone ? [`  Phone       : ${report.contactPhone}`] : []),
       `  Submitted   : ${new Date(report.createdAt || Date.now()).toUTCString()}`,
       '',
       'View and manage all emergency reports here:',

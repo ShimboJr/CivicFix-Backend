@@ -136,7 +136,7 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
   // Body is plain JSON now — no multipart parsing needed.
   const location = req.body.location;
 
-  const { type, description } = req.body;
+  const { type, description, contactPhone } = req.body;
 
   // ── Presence validation ───────────────────────────────────────────────────
   if (!type) {
@@ -264,6 +264,9 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
     },
     media:  verifiedMedia,
     status: 'New',
+    // Only write contactPhone when the reporter supplied one — keeps the field
+    // absent from documents where no number was provided rather than storing ''.
+    ...(contactPhone ? { contactPhone: String(contactPhone).trim() } : {}),
   });
 
   // Notify all admins (fire-and-forget) ──────────────────────────────────────

@@ -124,6 +124,26 @@ const emergencyReportSchema = new mongoose.Schema(
       default: [],
     },
 
+    // ── Optional contact phone number ─────────────────────────────────────────
+    // Stored in E.164 format (e.g. "+2348012345678") — a single combined string
+    // that already includes the country calling code.  This is the normalized
+    // output produced by libphonenumber-js (via react-phone-number-input on the
+    // client), not a raw user-typed string.
+    //
+    // Optional: some reporters may not want to share a direct call-back number,
+    // and the reporter's account email is already available on the User document.
+    // When present, it is surfaced in:
+    //   - notifyAdminsEmergency (the alert email)
+    //   - EmergencyDetail.jsx (the admin detail view)
+    contactPhone: {
+      type:  String,
+      trim:  true,
+      match: [
+        /^\+\d{7,15}$/,
+        'contactPhone must be a valid E.164 number (e.g. "+2348012345678")',
+      ],
+    },
+
     // ── Lifecycle status ──────────────────────────────────────────────────────
     status: {
       type:    String,
