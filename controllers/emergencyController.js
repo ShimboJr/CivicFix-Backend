@@ -379,6 +379,33 @@ const getAllEmergencyReports = asyncHandler(async (_req, res) => {
 });
 
 
+// ─── @desc    Fetch a single emergency report by ID (admin detail view)
+// ─── @route   GET /api/emergency-reports/:id
+// ─── @access  Private, admin only
+//
+// Used by the EmergencyDetail page to display the full report, including all
+// media, reporter contact details, acknowledgement info, and status controls.
+// Returned in the same populated shape as getAllEmergencyReports so the frontend
+// can reuse the same field names across both the list and detail views.
+const getEmergencyReportById = asyncHandler(async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    res.status(404);
+    throw new Error('Emergency report not found');
+  }
+
+  const report = await EmergencyReport.findById(req.params.id)
+    .populate('reporter',       'name email phone')
+    .populate('acknowledgedBy', 'name');
+
+  if (!report) {
+    res.status(404);
+    throw new Error('Emergency report not found');
+  }
+
+  res.status(200).json(report);
+});
+
+
 // ─── @desc    Acknowledge an emergency report
 // ─── @route   PUT /api/emergency-reports/:id/acknowledge
 // ─── @access  Private, admin only
@@ -514,6 +541,7 @@ module.exports = {
   createEmergencyReport,
   getMyEmergencyReports,
   getAllEmergencyReports,
+  getEmergencyReportById,
   acknowledgeReport,
   updateReportStatus,
   getEmergencyNumber,

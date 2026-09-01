@@ -8,6 +8,7 @@ const {
   createEmergencyReport,
   getMyEmergencyReports,
   getAllEmergencyReports,
+  getEmergencyReportById,
   acknowledgeReport,
   updateReportStatus,
   getEmergencyNumber,
@@ -68,6 +69,7 @@ router.get('/my-reports', protect, getMyEmergencyReports);
 // All of the following require both authentication AND the 'admin' role.
 // A 'staff' user who passes `protect` will be rejected at `authorize('admin')`.
 router.get('/',                        protect, authorize('admin'), getAllEmergencyReports);
+router.get('/:id',                     protect, authorize('admin'), getEmergencyReportById);
 router.put('/:id/acknowledge',         protect, authorize('admin'), acknowledgeReport);
 router.put('/:id/status',              protect, authorize('admin'), updateReportStatus);
 
