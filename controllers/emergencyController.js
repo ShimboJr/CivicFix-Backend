@@ -4,29 +4,39 @@ const EmergencyReport           = require('../models/EmergencyReport');
 const cloudinary                = require('../config/cloudinary');
 const { notifyAdminsEmergency } = require('../utils/notify');
 
+// ─── Constants ─────────────────────────────────────────────────────────────────
+// 15-second user-facing cap + 1-second buffer for encoding rounding.
+// The server re-fetches this from Cloudinary's Admin API for every video in the
+// submitted media array — the client-reported value is NEVER trusted.
+const MAX_VIDEO_DURATION_SECONDS = 16;
+const UPLOAD_FOLDER              = 'civicfix/emergency-reports';
+
 // ─── Static emergency-number dataset ──────────────────────────────────────────
 // Loaded once at startup; never queried from an LLM — every entry in this file
 // was manually verified against Wikipedia and official sources.
 const EMERGENCY_NUMBERS = require('../data/emergencyNumbers.json');
 
 // ─── cleanupFiles ─────────────────────────────────────────────────────────────
-// Deletes every asset in `files` from Cloudinary using Promise.allSettled so a
-// single failing destroy never prevents the others from being attempted.
-// Called whenever validation fails AFTER files have already been uploaded, to
-// prevent orphaned media accumulating in the emergency-reports folder.
-const cleanupFiles = async (files = []) => {
-  if (!files.length) return;
+// Deletes every asset in `mediaItems` from Cloudinary using Promise.allSettled
+// so a single failing destroy never prevents the others from being attempted.
+//
+// Accepts an array of plain objects shaped as:
+//   { publicId: string, type: 'image' | 'video' }
+//
+// Called whenever validation fails AFTER files have already been uploaded to
+// Cloudinary directly from the browser, to prevent orphaned media accumulating
+// in the emergency-reports Cloudinary folder.
+const cleanupFiles = async (mediaItems = []) => {
+  if (!mediaItems.length) return;
   await Promise.allSettled(
-    files.map((f) => {
-      const resourceType =
-        f.mimetype?.startsWith('video/') || f.resource_type === 'video'
-          ? 'video'
-          : 'image';
+    mediaItems.map(({ publicId, type }) => {
+      if (!publicId) return Promise.resolve(); // nothing to clean up
+      const resourceType = type === 'video' ? 'video' : 'image';
       return cloudinary.uploader
-        .destroy(f.filename, { resource_type: resourceType })
+        .destroy(publicId, { resource_type: resourceType })
         .catch((e) =>
           console.error(
-            `[emergencyController] Cloudinary cleanup failed for ${f.filename}:`,
+            `[emergencyController] Cloudinary cleanup failed for ${publicId}:`,
             e.message
           )
         );
@@ -51,43 +61,80 @@ const cleanupFiles = async (files = []) => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 
+// ─── @desc    Return a signed payload for a direct browser-to-Cloudinary upload
+// ─── @route   GET /api/emergency-reports/upload-signature
+// ─── @access  Private (any authenticated user)
+//
+// The browser uses these five values to POST a file directly to:
+//   https://api.cloudinary.com/v1_1/{cloudName}/auto/upload
+// File bytes never pass through the serverless function, which sidesteps
+// Vercel's platform-level ~4.5 MB request body limit entirely.
+//
+// Security notes:
+//   - `apiSecret` is used only to compute the HMAC signature; it is NEVER
+//     included in the response.
+//   - The signature covers both `timestamp` and `folder`, so a captured
+//     signature cannot be reused for a different folder or after it expires.
+//   - Signatures are valid for ~1 hour on Cloudinary's side; the timestamp
+//     is included so Cloudinary can enforce that window server-side.
+const getUploadSignature = asyncHandler(async (req, res) => {
+  const timestamp  = Math.floor(Date.now() / 1000);
+  const paramsToSign = { timestamp, folder: UPLOAD_FOLDER };
+
+  const signature = cloudinary.utils.api_sign_request(
+    paramsToSign,
+    process.env.CLOUDINARY_API_SECRET
+  );
+
+  res.status(200).json({
+    signature,
+    timestamp,
+    apiKey:    process.env.CLOUDINARY_API_KEY,
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    folder:    UPLOAD_FOLDER,
+  });
+});
+
+
 // ─── @desc    Submit a new emergency report
 // ─── @route   POST /api/emergency-reports
 // ─── @access  Private (any authenticated user)
 //
-// Expects multipart/form-data with:
-//   type, description, location (JSON string or object), and up to 5 files
-//   in the 'media' field — processed by uploadEmergencyMedia +
-//   checkVideoDurations BEFORE this handler runs.
+// Expects a plain JSON body (Content-Type: application/json) with:
+//   type, description, location { address, latitude, longitude },
+//   media (optional array of already-uploaded Cloudinary assets):
+//     [{ url, type, durationSeconds, publicId }, …]
 //
-// If validation fails here (after the upload middleware has already sent files
-// to Cloudinary), cleanupFiles() deletes every just-uploaded asset so nothing
-// is left orphaned in the emergency-reports Cloudinary folder.
+// The file bytes have already been uploaded directly from the browser to
+// Cloudinary before this endpoint is called — no multipart/form-data,
+// no Multer middleware on this route.
+//
+// For every video entry, this handler independently re-fetches the
+// authoritative duration from Cloudinary's Admin API and rejects (+ destroys)
+// any clip that exceeds MAX_VIDEO_DURATION_SECONDS.  The client-reported
+// durationSeconds value is NEVER trusted — a tampered client could lie
+// about duration to bypass the cap.
+//
+// If any validation fails after assets are already uploaded, cleanupFiles()
+// deletes every asset that was part of this submission so nothing is left
+// orphaned in the Cloudinary folder.
 const createEmergencyReport = asyncHandler(async (req, res) => {
-  const uploadedFiles = req.files || [];
+  // `media` is an array of already-uploaded asset descriptors from the browser.
+  // We normalise it to [] if absent so the rest of the handler is uniform.
+  const submittedMedia = Array.isArray(req.body.media) ? req.body.media : [];
 
   // ── Helper: reject with cleanup ───────────────────────────────────────────
-  // Inline so we can return a throw-style error without losing the status code.
+  // Deletes every asset that was uploaded as part of this submission attempt
+  // before throwing — prevents orphaned media in the Cloudinary folder.
   const rejectWithCleanup = async (statusCode, message) => {
-    await cleanupFiles(uploadedFiles);
+    await cleanupFiles(submittedMedia);
     res.status(statusCode);
     throw new Error(message);
   };
 
-  // ── Parse location ────────────────────────────────────────────────────────
-  // The form is submitted as multipart/form-data (because of file uploads).
-  // FormData cannot natively represent nested objects so the frontend sends
-  // location as JSON.stringify({ address, latitude, longitude }).  We handle
-  // both the stringified and already-parsed cases.
-  let location;
-  try {
-    location =
-      typeof req.body.location === 'string'
-        ? JSON.parse(req.body.location)
-        : req.body.location;
-  } catch {
-    await rejectWithCleanup(400, 'Invalid location format — expected a JSON object');
-  }
+  // ── Parse + validate location ─────────────────────────────────────────────
+  // Body is plain JSON now — no multipart parsing needed.
+  const location = req.body.location;
 
   const { type, description } = req.body;
 
@@ -126,26 +173,84 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
     );
   }
 
-  // ── Build media array from uploaded files ─────────────────────────────────
-  // multer-storage-cloudinary v4 spreads the full Cloudinary API response onto
-  // each file object, giving us:
-  //   f.path          — the Cloudinary secure_url (used as the stored URL)
-  //   f.resource_type — 'image' or 'video' as determined by Cloudinary
-  //   f.duration      — seconds of video (present only for video resources)
-  //   f.filename      — public_id (used by cleanupFiles for destroy calls)
-  const media = uploadedFiles.map((f) => {
-    const isVideo =
-      f.mimetype?.startsWith('video/') || f.resource_type === 'video';
-    return {
-      url:  f.path,                                        // Cloudinary secure_url
-      type: isVideo ? 'video' : 'image',
-      // durationSeconds is only meaningful for video; omit the key for images
-      // so the schema's optional field doesn't store a spurious null/undefined.
-      ...(isVideo && typeof f.duration === 'number'
-        ? { durationSeconds: f.duration }
-        : {}),
-    };
-  });
+  // ── Media count validation ────────────────────────────────────────────────
+  if (submittedMedia.length > 5) {
+    await rejectWithCleanup(400, 'Maximum 5 media files are allowed per report');
+  }
+
+  // ── Per-item shape validation + server-side video duration gate ───────────
+  // For each video, we call Cloudinary's Admin API to get the REAL duration.
+  // The client-reported durationSeconds is logged for debugging but NEVER used
+  // for enforcement — a tampered client could send any value it likes.
+  const verifiedMedia = [];
+  const toDestroy     = []; // assets we need to clean up on rejection
+
+  for (const item of submittedMedia) {
+    const { url, type: mediaType, publicId } = item;
+
+    if (!url || !mediaType) {
+      await rejectWithCleanup(400, 'Each media item must include url and type');
+    }
+    if (!['image', 'video'].includes(mediaType)) {
+      await rejectWithCleanup(400, `Invalid media type "${mediaType}" — must be 'image' or 'video'`);
+    }
+
+    if (mediaType === 'video') {
+      if (!publicId) {
+        await rejectWithCleanup(400, 'Video media items must include a publicId for server-side duration verification');
+      }
+
+      // Re-fetch authoritative duration from Cloudinary Admin API.
+      // This is the real enforcement backstop — not Multer, not the client.
+      let realDuration;
+      try {
+        const info  = await cloudinary.api.resource(publicId, { resource_type: 'video' });
+        realDuration = info.duration; // seconds, float
+      } catch (err) {
+        console.error(
+          `[createEmergencyReport] Failed to fetch Cloudinary metadata for ${publicId}:`,
+          err.message
+        );
+        // If we can't verify, err on the safe side and reject
+        toDestroy.push({ publicId, type: 'video' });
+        await cleanupFiles([...toDestroy]);
+        res.status(400);
+        throw new Error(
+          'Could not verify video duration — please re-upload and try again'
+        );
+      }
+
+      if (realDuration > MAX_VIDEO_DURATION_SECONDS) {
+        // Mark this specific asset for destruction; also clean up any already-
+        // accepted assets so the whole submission is rolled back atomically.
+        toDestroy.push({ publicId, type: 'video' });
+        // Also queue everything already accepted for this submission
+        verifiedMedia.forEach((m) => {
+          if (m.publicId) toDestroy.push({ publicId: m.publicId, type: m.type });
+        });
+        await cleanupFiles(toDestroy);
+        res.status(400);
+        throw new Error(
+          `Video too long — maximum ${MAX_VIDEO_DURATION_SECONDS - 1} seconds allowed ` +
+          `(submitted clip is ${Math.ceil(realDuration)}s). Please trim your clip and resubmit.`
+        );
+      }
+
+      verifiedMedia.push({
+        url,
+        type:            'video',
+        durationSeconds: realDuration,  // use the authoritative value, not the client's
+        publicId,
+      });
+    } else {
+      // Image — no duration to verify
+      verifiedMedia.push({
+        url,
+        type: 'image',
+        ...(publicId ? { publicId } : {}),
+      });
+    }
+  }
 
   // ── Persist ───────────────────────────────────────────────────────────────
   const report = await EmergencyReport.create({
@@ -157,11 +262,11 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
       latitude:  parseFloat(location.latitude),
       longitude: parseFloat(location.longitude),
     },
-    media,
+    media:  verifiedMedia,
     status: 'New',
   });
 
-  // Notify all admins (fire-and-forget) ──────────────────────────────────
+  // Notify all admins (fire-and-forget) ──────────────────────────────────────
   // Wrapped in try/catch + .catch() so any failure here never prevents the
   // 201 response from reaching the reporter — their submission always succeeds.
   try {
@@ -405,6 +510,7 @@ const getEmergencyNumber = asyncHandler(async (req, res) => {
 
 
 module.exports = {
+  getUploadSignature,
   createEmergencyReport,
   getMyEmergencyReports,
   getAllEmergencyReports,

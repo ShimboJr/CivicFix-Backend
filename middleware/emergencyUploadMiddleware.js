@@ -1,8 +1,30 @@
 /**
  * middleware/emergencyUploadMiddleware.js
  *
- * Dedicated upload stack for EmergencyReport media.  Kept separate from
- * uploadMiddleware.js because the two have materially different requirements:
+ * ⚠️  DEPRECATED — no longer wired to any route.
+ *
+ * This file is kept to avoid breaking any test files that import from it
+ * directly.  It should not be imported in production code.
+ *
+ * WHY IT WAS REMOVED:
+ *   The emergency-report media upload flow was migrated to direct browser-to-
+ *   Cloudinary uploads (signed server-side via GET /upload-signature) to
+ *   sidestep Vercel's platform-level ~4.5 MB request body limit, which was
+ *   causing a raw 413 before Express/Multer ever ran on large phone photos.
+ *
+ *   The POST /api/emergency-reports route now accepts a plain JSON body
+ *   containing already-uploaded Cloudinary asset descriptors.  Server-side
+ *   video duration enforcement is now in createEmergencyReport via the
+ *   Cloudinary Admin API rather than this middleware.
+ *
+ * RELATED RISK (out of scope for this fix):
+ *   The regular issue-photo upload path (issueRoutes.js → uploadMiddleware.js)
+ *   still uses multipart/form-data and will hit the same platform ceiling if a
+ *   user submits a sufficiently large photo there.
+ *
+ * Original purpose (preserved below for reference):
+ *   Dedicated upload stack for EmergencyReport media.  Kept separate from
+ *   uploadMiddleware.js because the two have materially different requirements:
  *
  *   Feature              | uploadMiddleware (issues)  | this file (emergency)
  *   ─────────────────────┼───────────────────────────┼──────────────────────
@@ -27,6 +49,7 @@
  *                          rejected and ALL just-uploaded assets are deleted
  *                          so nothing is left orphaned on Cloudinary.
  */
+
 
 const multer                = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');

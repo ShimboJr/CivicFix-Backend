@@ -2,12 +2,9 @@ const express = require('express');
 const router  = express.Router();
 
 const { protect, authorize } = require('../middleware/authMiddleware');
-const {
-  uploadEmergencyMedia,
-  checkVideoDurations,
-} = require('../middleware/emergencyUploadMiddleware');
 
 const {
+  getUploadSignature,
   createEmergencyReport,
   getMyEmergencyReports,
   getAllEmergencyReports,
@@ -20,11 +17,12 @@ const {
 //  /api/emergency-reports
 //
 //  Visibility contract (mirroring the controller comment):
-//    POST  /            → any authenticated user    (protect)
-//    GET   /my-reports  → any authenticated user    (protect)   — own reports only
-//    GET   /            → admin only                (protect + authorize('admin'))
-//    PUT   /:id/acknowledge → admin only            (protect + authorize('admin'))
-//    PUT   /:id/status      → admin only            (protect + authorize('admin'))
+//    GET   /upload-signature → any authenticated user    (protect)
+//    POST  /                 → any authenticated user    (protect)
+//    GET   /my-reports       → any authenticated user    (protect)  — own reports only
+//    GET   /                 → admin only                (protect + authorize('admin'))
+//    PUT   /:id/acknowledge  → admin only                (protect + authorize('admin'))
+//    PUT   /:id/status       → admin only                (protect + authorize('admin'))
 //
 //  Deliberately missing:
 //    - No public GET
@@ -43,22 +41,28 @@ const {
 router.get('/emergency-number', getEmergencyNumber);
 
 // ── Reporter-accessible routes (any authenticated user) ───────────────────────
-// IMPORTANT: /my-reports MUST be declared BEFORE /:id so Express does not try
-// to match the literal string "my-reports" as a MongoDB ObjectId.
-//
-// POST / middleware chain:
-//   protect              — JWT auth gate
-//   uploadEmergencyMedia — streams files to Cloudinary, enforces size cap
-//   checkVideoDurations  — rejects + cleans up if any video exceeds 15 s
-//   createEmergencyReport — validates body fields, builds media array, persists
-router.post(
-  '/',
-  protect,
-  uploadEmergencyMedia,
-  checkVideoDurations,
-  createEmergencyReport
-);
-router.get( '/my-reports', protect, getMyEmergencyReports);
+// IMPORTANT: literal-string paths (/upload-signature, /my-reports) MUST be
+// declared BEFORE /:id so Express does not try to match those strings as
+// MongoDB ObjectIds.
+
+// GET /upload-signature
+//   Returns a server-signed payload for a direct browser-to-Cloudinary upload.
+//   File bytes never pass through this serverless function, which sidesteps
+//   Vercel's platform-level ~4.5 MB request body limit.
+//   Returns: { signature, timestamp, apiKey, cloudName, folder }
+router.get('/upload-signature', protect, getUploadSignature);
+
+// POST /
+//   Accepts a plain JSON body:
+//     { type, description, location, media: [{ url, type, durationSeconds, publicId }] }
+//   No Multer middleware — file bytes were already uploaded directly to Cloudinary
+//   before this endpoint is called.  The controller re-fetches video duration from
+//   the Cloudinary Admin API and rejects any clip exceeding 15 s.
+router.post('/', protect, createEmergencyReport);
+
+// GET /my-reports
+//   Returns the authenticated reporter's own submitted reports, newest first.
+router.get('/my-reports', protect, getMyEmergencyReports);
 
 // ── Admin-only routes ─────────────────────────────────────────────────────────
 // All of the following require both authentication AND the 'admin' role.

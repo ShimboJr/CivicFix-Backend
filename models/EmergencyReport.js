@@ -21,6 +21,15 @@ const mediaSchema = new mongoose.Schema(
     durationSeconds: {
       type: Number,
     },
+
+    // Cloudinary public_id — stored so the server can call the Admin API to
+    // re-verify video duration and call destroy() for cleanup.
+    // Optional: absent for legacy documents created before the direct-upload
+    // migration (those were stored without this field).
+    publicId: {
+      type: String,
+      trim: true,
+    },
   },
   { _id: false } // no extra ObjectId per attachment — url is the natural key
 );
