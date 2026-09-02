@@ -50,10 +50,20 @@ const subscribeToPush = asyncHandler(async (req, res) => {
     );
   }
 
-  const user = await User.findById(req.user._id);
+  // IMPORTANT: pushSubscriptions has select:false in the schema.
+  // A plain findById() silently omits it, making .some() blow up with
+  // "Cannot read properties of undefined (reading 'some')".
+  // The '+' prefix forces Mongoose to include a select:false field.
+  const user = await User.findById(req.user._id).select('+pushSubscriptions');
   if (!user) {
     res.status(404);
     throw new Error('User not found');
+  }
+
+  // Defensive: ensure the array exists even on documents that pre-date the
+  // schema field being added (in case Mongoose didn't write the default).
+  if (!Array.isArray(user.pushSubscriptions)) {
+    user.pushSubscriptions = [];
   }
 
   // Duplicate guard — if this exact endpoint is already in the array, skip.
