@@ -111,6 +111,7 @@ app.use('/api/categories',     require('./routes/categoryRoutes'));
 app.use('/api/notifications',  require('./routes/notificationRoutes'));
 app.use('/api/uploads',        require('./routes/uploadRoutes'));
 app.use('/api/emergency-reports', require('./routes/emergencyRoutes'));
+app.use('/api/push',             require('./routes/pushRoutes'));
 // TODO: mount comment routes   → app.use('/api/comments',   require('./routes/commentRoutes'));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────

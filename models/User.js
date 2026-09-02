@@ -63,6 +63,29 @@ const userSchema = new mongoose.Schema(
       type:   Date,
       select: false,
     },
+
+    // ── Web Push subscriptions ─────────────────────────────────────────────────
+    // Array because one admin may have multiple devices or browsers subscribed
+    // simultaneously (phone, desktop, etc.).  Each entry is the serialised form
+    // of a W3C PushSubscription object.
+    //
+    // Dead entries (404/410 from the push service) are removed automatically by
+    // sendPushToAdmins() in utils/webPush.js — no manual maintenance needed.
+    //
+    // select:false is intentional — these are sensitive browser credentials and
+    // should not leak into normal user queries.  pushController.js and
+    // webPush.js both use explicit .select() calls when they need the field.
+    pushSubscriptions: {
+      type:    [{
+        endpoint: { type: String, required: true },
+        keys: {
+          p256dh: { type: String, required: true },
+          auth:   { type: String, required: true },
+        },
+      }],
+      default: [],
+      select:  false,
+    },
   },
   {
     timestamps: true, // Adds createdAt & updatedAt automatically
