@@ -118,8 +118,6 @@ Issue Resolved
 
 ## 📸 Application Screenshots
 
-> **Repository setup:** Create a folder named `screenshots` in the root of the repository and place the screenshot files inside it using the exact filenames shown below.
-
 ### 🏠 Homepage
 
 The landing page introduces CivicFix and provides quick access to issue reporting and community issue browsing.
@@ -216,6 +214,12 @@ Additional environment variables may be required for services such as Cloudinary
 ### 5. Start the Development Server
 
 Depending on the scripts configured in `package.json`, run:
+
+```bash
+nodemon
+```
+
+or:
 
 ```bash
 npm run dev
