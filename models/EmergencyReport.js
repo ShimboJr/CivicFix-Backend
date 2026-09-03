@@ -97,6 +97,10 @@ const emergencyReportSchema = new mongoose.Schema(
         'Kidnapping / Abduction',
         'Active Threat',
         'Other Life-Threatening Emergency',
+        // Auto-created when a resident activates live location sharing.
+        // Distinct from witnessed-incident types so admins can filter and
+        // render the live map panel rather than a static location label.
+        'Live Location SOS',
       ],
       required: [true, 'Emergency type is required'],
     },
