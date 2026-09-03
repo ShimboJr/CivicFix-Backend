@@ -316,10 +316,57 @@ const getActiveSessionForReport = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  addSessionNote
+//  PATCH /api/live-location/:id/note
+//  Access: protected — session owner only
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Lets the resident add or update a free-text note describing what is happening.
+ * Stored on the linked EmergencyReport's description field so admins see it
+ * alongside the live map on EmergencyDetail.
+ *
+ * Body: { note: string }
+ */
+const addSessionNote = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { note } = req.body;
+
+    if (!note || !String(note).trim()) {
+      return res.status(400).json({ message: 'note must be a non-empty string' });
+    }
+
+    const session = await LiveLocationSession.findById(id);
+    if (!session) {
+      return res.status(404).json({ message: 'Live location session not found' });
+    }
+
+    // Ownership: only the resident who started the session can add a note
+    if (session.reporter.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        message: 'Not authorised — only the session owner can update this note',
+      });
+    }
+
+    // Update the linked report's description — this is where admins read it
+    await EmergencyReport.findByIdAndUpdate(
+      session.emergencyReport,
+      { $set: { description: String(note).trim() } }
+    );
+
+    return res.status(200).json({ message: 'Note saved' });
+  } catch (err) {
+    console.error('[liveLocation] addSessionNote error:', err.message);
+    res.status(500).json({ message: 'Server error saving session note' });
+  }
+};
+
 module.exports = {
   startSession,
   addLocationPing,
   endSession,
   getSessionById,
   getActiveSessionForReport,
+  addSessionNote,
 };

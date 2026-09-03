@@ -9,6 +9,7 @@ const {
   endSession,
   getSessionById,
   getActiveSessionForReport,
+  addSessionNote,
 } = require('../controllers/liveLocationController');
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -44,6 +45,13 @@ router.post('/:id/ping', protect, addLocationPing);
 //   No body required.
 //   Either the session's reporter or an admin can call this.
 router.post('/:id/end', protect, endSession);
+
+// PATCH /:id/note
+//   Body: { note: string }
+//   Lets the session owner add/update a free-text description of what is
+//   happening.  Stored on the linked EmergencyReport so admins see it.
+//   Owner-only check is enforced in the controller.
+router.patch('/:id/note', protect, addSessionNote);
 
 // ── Admin-only routes ─────────────────────────────────────────────────────────
 
