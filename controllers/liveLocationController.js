@@ -126,9 +126,11 @@ const startSession = async (req, res) => {
  *   - expiresAt must not have passed; if it has, lazily flip to 'expired'
  *     and reject with 410 Gone (the client should stop sending pings).
  *
- * Trail cap: the locationTrail array is capped at 200 entries.  When a 201st
- * ping would be added we $slice the array to keep only the last 200, ensuring
- * no session can grow the document unboundedly.
+ * Trail cap: the locationTrail array is capped at 3 000 entries — a ceiling
+ * that is comfortably above the maximum realistic trail length even for the
+ * longest allowed session plus a generous buffer (a full session is a few
+ * hundred KB at most, well within MongoDB's 16 MB document limit).  Old entries
+ * are NOT evicted during a live session; history is preserved in full.
  *
  * Body: { latitude: number, longitude: number, accuracy?: number }
  */
@@ -173,19 +175,17 @@ const addLocationPing = async (req, res) => {
     const now      = new Date();
     const newPing  = { latitude, longitude, accuracy, timestamp: now };
 
-    // Build the full updated trail in memory so we can enforce the 200-entry cap
-    // atomically without a read-then-write race.  For the trail we append and
-    // then slice, keeping only the newest 200 entries.
-    //
-    // Using findByIdAndUpdate with $push + $slice (MongoDB's atomic array
-    // update) is safer than mutating session.locationTrail and calling save(),
-    // because concurrent pings won't corrupt the document.
+    // Append the new ping atomically using MongoDB's $push + $slice.
+    // The ceiling of 3 000 is far above what any realistic session can reach
+    // (10-second pings × 60-minute max ≈ 360 points), so it will never be
+    // hit in practice — it exists purely as a safety bound against runaway
+    // documents, not as a deliberate history-trimming mechanism.
     await LiveLocationSession.findByIdAndUpdate(id, {
       $set:  { currentLocation: newPing, lastPingAt: now },
       $push: {
         locationTrail: {
           $each:  [newPing],
-          $slice: -200,   // keep only the 200 most-recent entries
+          $slice: -3000,  // safety ceiling — full history preserved in practice
         },
       },
     });
@@ -279,34 +279,40 @@ const getSessionById = async (req, res) => {
 //  Access: admin only
 // ══════════════════════════════════════════════════════════════════════════════
 /**
- * Returns the active LiveLocationSession linked to the given EmergencyReport id,
- * or null if none exists or the session has already ended/expired.
+ * Returns the LiveLocationSession linked to the given EmergencyReport id,
+ * regardless of its current status (active, ended, or expired).
  *
- * Used by EmergencyDetail.jsx to decide whether to render a live map panel.
+ * Used by EmergencyDetail.jsx to render both the live tracking map (when the
+ * session is active) and the static Movement History view (once it has ended
+ * or expired).  Returning null only when NO session exists at all; a finished
+ * session still has a full locationTrail worth showing.
  *
- * Also performs a lazy expiry check so the admin never sees an 'active' session
- * that has actually timed out.
+ * For active sessions a lazy expiry check is performed so the admin never sees
+ * a stale 'active' label on a session whose expiresAt has already passed.
  */
 const getActiveSessionForReport = async (req, res) => {
   try {
     const { reportId } = req.params;
 
+    // Find any session for this report — active, ended, or expired.
+    // Sort by createdAt descending so the most-recent session wins if somehow
+    // more than one exists for the same report.
     const session = await LiveLocationSession.findOne({
       emergencyReport: reportId,
-      status:          'active',
-    }).populate('reporter', 'name email');
+    })
+      .sort({ createdAt: -1 })
+      .populate('reporter', 'name email');
 
     if (!session) {
-      // No session, or already ended/expired — return null payload so the
-      // client can simply check `data.session` without special-casing 404.
+      // No session has ever been created for this report.
       return res.status(200).json({ session: null });
     }
 
-    // Lazy expiry: if it's nominally 'active' but the clock has passed,
-    // flip it now and return null (the live map should not render)
-    const expired = await lazyExpireIfNeeded(session);
-    if (expired) {
-      return res.status(200).json({ session: null });
+    // For active sessions only: lazily flip to 'expired' if the clock has
+    // passed expiresAt.  We still return the session — the client uses the
+    // updated status to choose the correct rendering mode.
+    if (session.status === 'active') {
+      await lazyExpireIfNeeded(session);
     }
 
     return res.status(200).json({ session });
