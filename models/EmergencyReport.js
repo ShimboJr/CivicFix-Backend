@@ -148,12 +148,13 @@ const emergencyReportSchema = new mongoose.Schema(
       ],
     },
 
-    // ── Lifecycle status ──────────────────────────────────────────────────────
+    // ── Lifecycle status ─────────────────────────────────────────────────────────────
     status: {
       type:    String,
       enum:    ['New', 'Acknowledged', 'Escalated', 'Resolved', 'False Alarm'],
       default: 'New',
-      index:   true,  // used in the admin sort (New first)
+      // Index declared as a compound below — do NOT add index:true here;
+      // that would create a redundant single-field index alongside the compound.
     },
 
     // ── Admin acknowledgement ─────────────────────────────────────────────────
@@ -171,5 +172,17 @@ const emergencyReportSchema = new mongoose.Schema(
     timestamps: true, // createdAt, updatedAt
   }
 );
+
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+// getAllEmergencyReports aggregation sorts by a computed _statusOrder field
+// (derived from status) then by createdAt descending within each status bucket.
+// The compound index lets MongoDB service the most-latency-sensitive branch:
+// 'New' reports (status = 'New') sorted newest-first, which is also the
+// staleNew $match in getEmergencyStats ({ status:'New', createdAt:{ $lt:X } }).
+// ESR guidance: status (equality) → createdAt (sort/range).
+emergencyReportSchema.index({ status: 1, createdAt: -1 });
+
+// getMyEmergencyReports: EmergencyReport.find({ reporter: userId }).
+// reporter already has index:true declared inline above.
 
 module.exports = mongoose.model('EmergencyReport', emergencyReportSchema);

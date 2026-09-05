@@ -59,12 +59,13 @@ const liveLocationSessionSchema = new mongoose.Schema(
       index:    true,
     },
 
-    // ── Lifecycle status ──────────────────────────────────────────────────────
+    // ── Lifecycle status ─────────────────────────────────────────────────────────────
     status: {
       type:    String,
       enum:    ['active', 'ended', 'expired'],
       default: 'active',
-      index:   true,
+      // Compound index declared below — do NOT add index:true here;
+      // it would create a redundant single-field index alongside the compound.
     },
 
     // ── Time bounds ───────────────────────────────────────────────────────────
@@ -110,5 +111,17 @@ const liveLocationSessionSchema = new mongoose.Schema(
     timestamps: true, // createdAt, updatedAt
   }
 );
+
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+// lazyExpireIfNeeded (called by addLocationPing, getSessionById,
+// getActiveSessionForReport) queries:
+//   { status: 'active', expiresAt: { $lte: now } }
+// ESR: status is an equality filter, expiresAt is a range filter.
+// The compound index below makes this a bounded IXSCAN rather than a COLLSCAN
+// on status alone followed by in-memory filtering on expiresAt.
+liveLocationSessionSchema.index({ status: 1, expiresAt: 1 });
+
+// getActiveSessionForReport: findOne({ emergencyReport: reportId })
+// emergencyReport already has index:true declared inline above.
 
 module.exports = mongoose.model('LiveLocationSession', liveLocationSessionSchema);

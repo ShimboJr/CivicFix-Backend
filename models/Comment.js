@@ -26,6 +26,13 @@ const commentSchema = new mongoose.Schema(
   }
 );
 
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+// getIssueById and getComments both call:
+//   Comment.find({ issue: id }).sort({ createdAt: 1 })
+// The compound index below supports both the equality filter on `issue` and the
+// ascending-createdAt sort in a single IXSCAN (ESR: Equality → Sort).
+commentSchema.index({ issue: 1, createdAt: 1 });
+
 const Comment = mongoose.model('Comment', commentSchema);
 
 module.exports = Comment;

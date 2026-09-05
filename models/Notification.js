@@ -31,7 +31,9 @@ const notificationSchema = new mongoose.Schema(
       type:     mongoose.Schema.Types.ObjectId,
       ref:      'User',
       required: true,
-      index:    true,          // fast lookup by user
+      // Note: the compound index below replaces the need for a bare single-field
+      // index here.  Do NOT add index:true — that would create a redundant
+      // extra index, wasting write throughput.
     },
     // Optional — absent for emergency-report notifications (path 4 above).
     // Required for all other notification types (paths 1–3).
@@ -80,5 +82,19 @@ const notificationSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// ─── Indexes ──────────────────────────────────────────────────────────────────
+// getMyNotifications filters on { recipient } or { recipient, read:false } and
+// always sorts by { createdAt: -1 }.  The compound index below satisfies all
+// three of those fields in one scan (ESR order: Equality → Equality → Sort).
+//
+// This also replaces the bare `index:true` that was previously on the recipient
+// field — that single-field index is now redundant because a compound index
+// whose leading key is `recipient` serves all queries that filter on recipient
+// alone just as well, with no extra write cost.
+notificationSchema.index({ recipient: 1, read: 1, createdAt: -1 });
+
+// markAllAsRead: updateMany({ recipient, read:false }) — covered by the
+// compound index above (leading equality keys match the filter).
 
 module.exports = mongoose.model('Notification', notificationSchema);

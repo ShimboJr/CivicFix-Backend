@@ -88,6 +88,16 @@ issueSchema.index({ issueId: 1 }, { unique: true });
 // Compound index for the most common filter combination
 issueSchema.index({ category: 1, status: 1 });
 
+// getMyIssues: Issue.find({ reportedBy: userId }).sort({ createdAt: -1 })
+// Every resident dashboard load and the notify helper both hit this path.
+issueSchema.index({ reportedBy: 1 });
+
+// getAssignedIssues (staff): Issue.find({ assignedTo: staffId }).sort({ createdAt: -1 })
+// getStaffWorkload (admin): aggregate $match { assignedTo: { $exists, $ne:null } }
+//   then $group by assignedTo — the index lets MongoDB avoid a COLLSCAN and use
+//   the index as a grouping cursor instead.
+issueSchema.index({ assignedTo: 1 });
+
 // ─── Pre-save Hook — Generate issueId ────────────────────────────────────────
 issueSchema.pre('save', async function (next) {
   // Only generate an ID on new documents

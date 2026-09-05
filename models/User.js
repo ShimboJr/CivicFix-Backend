@@ -95,6 +95,11 @@ const userSchema = new mongoose.Schema(
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 userSchema.index({ email: 1 }, { unique: true });
 
+// Supports User.find({ role: 'admin' }) and User.find({ role: 'staff' }) which
+// fire on every new-issue creation, every emergency report, and the staff-
+// workload listing.  Low write-cost: role changes are rare admin operations.
+userSchema.index({ role: 1 });
+
 // ─── Pre-save Hook — Password Hashing ────────────────────────────────────────
 userSchema.pre('save', async function (next) {
   // Only hash the password if it has been modified (or is new)
