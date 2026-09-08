@@ -34,6 +34,8 @@ app.use(express.urlencoded({ extended: true }));
 const ALLOWED_ORIGINS = [
   process.env.CLIENT_URL,
   'http://localhost:5173',
+  'http://localhost:8081',
+  'exp://192.168.1.101:8081',
 ].filter(Boolean);
 
 app.use(
