@@ -10,6 +10,9 @@ const {
   getSessionById,
   getActiveSessionForReport,
   addSessionNote,
+  sendSessionMessage,
+  getSessionMessages,
+  confirmSafe,
 } = require('../controllers/liveLocationController');
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -19,12 +22,18 @@ const {
 //    POST  /start                   → any authenticated user (protect)
 //    POST  /:id/ping                → session owner only (enforced in controller)
 //    POST  /:id/end                 → session reporter OR admin (enforced in controller)
-//    GET   /:id                     → admin only (protect + authorize('admin'))
+//    PATCH /:id/note                → session owner only (enforced in controller)
+//    POST  /:id/messages            → admin only (protect + authorize('admin'))
+//    GET   /:id/messages            → session owner OR admin (protect; controller checks)
+//    POST  /:id/confirm-safe        → session owner only (protect; controller checks)
 //    GET   /by-report/:reportId     → admin only (protect + authorize('admin'))
+//    GET   /:id                     → admin only (protect + authorize('admin'))
 //
 //  Route ordering note:
 //    /start and /by-report/:reportId MUST appear before /:id so that Express
 //    does not try to match those literal strings as MongoDB ObjectIds.
+//    Sub-resource routes (/:id/messages, /:id/ping, etc.) are more specific
+//    than /:id and are therefore safe at any position above the bare GET /:id.
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Resident-accessible routes ────────────────────────────────────────────────
@@ -53,6 +62,30 @@ router.post('/:id/end', protect, endSession);
 //   Owner-only check is enforced in the controller.
 router.patch('/:id/note', protect, addSessionNote);
 
+// ── Messaging routes ─────────────────────────────────────────────────────────
+
+// POST /:id/messages
+//   Body: { text: string, isPreset?: boolean }
+//   Admin sends a one-way status message to the resident.
+//   ⚠️  Strictly silent — no push, no OS notification, no sound, no vibration.
+//   Delivery is via the resident's client polling GET /:id/messages.
+router.post('/:id/messages', protect, authorize('admin'), sendSessionMessage);
+
+// GET /:id/messages
+//   Returns all messages for the session, oldest first.
+//   Access: the session's own reporter OR any admin.
+//   The owner-vs-admin check is enforced inside the controller (not at route
+//   level) so we can apply the same protect middleware to both roles without
+//   branching here.
+router.get('/:id/messages', protect, getSessionMessages);
+
+// POST /:id/confirm-safe
+//   No body required.
+//   The resident taps "I'm Safe" — stamps reporterConfirmedSafeAt on the
+//   session.  Session status and tracking are intentionally NEVER altered here.
+//   Owner-only check is enforced in the controller.
+router.post('/:id/confirm-safe', protect, confirmSafe);
+
 // ── Admin-only routes ─────────────────────────────────────────────────────────
 
 // GET /by-report/:reportId
@@ -70,3 +103,4 @@ router.get('/by-report/:reportId', protect, authorize('admin'), getActiveSession
 router.get('/:id', protect, authorize('admin'), getSessionById);
 
 module.exports = router;
+

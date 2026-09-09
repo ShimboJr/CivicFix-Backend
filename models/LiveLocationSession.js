@@ -106,6 +106,22 @@ const liveLocationSessionSchema = new mongoose.Schema(
     lastPingAt: {
       type: Date,
     },
+
+    // ── Resident "I'm Safe" confirmation ──────────────────────────────────────
+    // Set by POST /:id/confirm-safe when the resident taps the in-UI button.
+    //
+    // ⚠️  SAFETY CONTRACT — read before touching this field:
+    //   Setting this timestamp MUST NEVER automatically change session.status
+    //   or stop location tracking.  A coerced "I'm safe" tap under duress
+    //   (e.g. a threat actor forcing the resident to confirm) must not be able
+    //   to end the session on its own.  Only the resident's explicit "Stop
+    //   Sharing" action (POST /:id/end) or an admin ending the session can do
+    //   that.  This field is purely informational — it tells admins that the
+    //   resident has acknowledged their messages, nothing more.
+    reporterConfirmedSafeAt: {
+      type:     Date,
+      default:  undefined,
+    },
   },
   {
     timestamps: true, // createdAt, updatedAt

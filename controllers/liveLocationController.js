@@ -1,5 +1,8 @@
 const EmergencyReport      = require('../models/EmergencyReport');
 const LiveLocationSession  = require('../models/LiveLocationSession');
+const SessionMessage       = require('../models/SessionMessage');
+const Notification         = require('../models/Notification');
+const User                 = require('../models/User');
 const { notifyAdminsEmergency } = require('../utils/notify');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -368,6 +371,210 @@ const addSessionNote = async (req, res) => {
   }
 };
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  sendSessionMessage
+//  POST /api/live-location/:id/messages
+//  Access: admin only (enforce via authorize('admin') on the route)
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Allows an admin to send a one-way status message to the resident who owns
+ * the session.
+ *
+ * ⚠️  SILENT BY DESIGN — NO PUSH / SYSTEM NOTIFICATION:
+ *   This controller MUST NOT call any push-notification or OS-alert function
+ *   (webPush, FCM, APNs, etc.).  The resident's device must not make a sound,
+ *   vibrate, or display a banner.  Any OS-level interruption is actively
+ *   dangerous if the resident is hiding the phone from a threat.
+ *   Messages are delivered exclusively via client-side polling of
+ *   GET /:id/messages.
+ *
+ * Body:
+ *   { text: string, isPreset?: boolean }
+ */
+const sendSessionMessage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { text, isPreset = false } = req.body;
+
+    if (!text || !String(text).trim()) {
+      return res.status(400).json({ message: 'text must be a non-empty string' });
+    }
+
+    // ── Fetch session ─────────────────────────────────────────────────────────
+    const session = await LiveLocationSession.findById(id);
+    if (!session) {
+      return res.status(404).json({ message: 'Live location session not found' });
+    }
+
+    // ── Create the message ────────────────────────────────────────────────────
+    // No push / system notification — silent poll-based delivery only.
+    const message = await SessionMessage.create({
+      session:  session._id,
+      sender:   req.user._id,
+      text:     String(text).trim(),
+      isPreset: Boolean(isPreset),
+    });
+
+    return res.status(201).json({
+      message: 'Message sent',
+      data:    message,
+    });
+  } catch (err) {
+    console.error('[liveLocation] sendSessionMessage error:', err.message);
+    res.status(500).json({ message: 'Server error sending session message' });
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  getSessionMessages
+//  GET /api/live-location/:id/messages
+//  Access: protected — session owner (resident) OR any admin
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Returns all messages for a session in chronological order (oldest first).
+ *
+ * The resident's client calls this endpoint on a short polling interval to
+ * surface admin messages without any OS-level notification.
+ * Admins can also call it to review the message thread.
+ *
+ * Authorization:
+ *   - The session's own reporter may read their session's messages.
+ *   - Any admin may read any session's messages.
+ *   - Anyone else receives 403.
+ */
+const getSessionMessages = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // ── Fetch session (lean — we only need reporter + _id) ────────────────────
+    const session = await LiveLocationSession.findById(id).select('reporter').lean();
+    if (!session) {
+      return res.status(404).json({ message: 'Live location session not found' });
+    }
+
+    // ── Authorization: owner or admin ─────────────────────────────────────────
+    const isOwner = session.reporter.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({
+        message: 'Not authorised — only the session owner or an admin can read these messages',
+      });
+    }
+
+    // ── Fetch messages, oldest first ──────────────────────────────────────────
+    const messages = await SessionMessage.find({ session: id })
+      .sort({ createdAt: 1 })
+      .populate('sender', 'name role');
+
+    return res.status(200).json({ messages });
+  } catch (err) {
+    console.error('[liveLocation] getSessionMessages error:', err.message);
+    res.status(500).json({ message: 'Server error fetching session messages' });
+  }
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  confirmSafe
+//  POST /api/live-location/:id/confirm-safe
+//  Access: protected — session owner only
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Records the moment the resident tapped "I'm Safe" by setting
+ * `reporterConfirmedSafeAt` to the current time.
+ *
+ * ⚠️  CRITICAL SAFETY INVARIANT — enforced here and documented on the model:
+ *   This function MUST NOT alter session.status or stop location tracking.
+ *   A coerced "I'm safe" tap under duress (a threat actor making the resident
+ *   confirm while watching) must not be able to end the session on its own.
+ *   Only the resident's explicit POST /:id/end or an admin ending the session
+ *   can transition the session out of 'active'.
+ *
+ * After stamping the timestamp an in-app Notification is fanned out to all
+ * admins so the confirmation is not missed if nobody currently has the report
+ * open.  This notification goes only to admins — it deliberately does NOT
+ * target the resident's device (no push, no vibration, no sound).
+ *
+ * Idempotent: calling this more than once simply updates the timestamp to "now"
+ * each time, which is safe and expected (e.g. network retry).
+ */
+const confirmSafe = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // ── Fetch session ─────────────────────────────────────────────────────────
+    const session = await LiveLocationSession.findById(id);
+    if (!session) {
+      return res.status(404).json({ message: 'Live location session not found' });
+    }
+
+    // ── Ownership: only the resident who owns this session can confirm ─────────
+    if (session.reporter.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        message: 'Not authorised — only the session owner can send an "I\'m Safe" confirmation',
+      });
+    }
+
+    // ── Stamp the timestamp — session status is intentionally untouched ───────
+    // DO NOT set session.status here.  See the safety invariant above.
+    const confirmedAt = new Date();
+    session.reporterConfirmedSafeAt = confirmedAt;
+    await session.save();
+
+    // ── Notify admins (in-app only, normal priority) ──────────────────────────
+    // This is the only place in the messaging flow where the existing
+    // notification system is used — and only on the admin side, so there is
+    // no stealth requirement.  We use Promise.allSettled so one bad admin
+    // record never blocks the 200 response.
+    notifyAdminsConfirmedSafe(session, req.user).catch((err) => {
+      console.error('[liveLocation] confirmSafe admin notification failed:', err.message);
+    });
+
+    return res.status(200).json({
+      message:             'Confirmation recorded',
+      reporterConfirmedSafeAt: confirmedAt,
+      // Explicitly echo the unchanged status so the client can assert that
+      // tracking is still running.
+      sessionStatus:       session.status,
+    });
+  } catch (err) {
+    console.error('[liveLocation] confirmSafe error:', err.message);
+    res.status(500).json({ message: 'Server error recording safe confirmation' });
+  }
+};
+
+// ─── Private helper: fan-out "resident confirmed safe" to all admins ──────────
+/**
+ * Creates one in-app Notification per admin user when the resident taps
+ * "I'm Safe".  Uses normal (non-urgent) priority — the emergency is still
+ * ongoing and tracked; this is informational only.
+ *
+ * Fire-and-forget: the caller wraps this in .catch() so failures here never
+ * affect the HTTP response to the resident.
+ *
+ * @param {import('../models/LiveLocationSession')} session
+ * @param {import('../models/User')}                reporter — req.user
+ */
+async function notifyAdminsConfirmedSafe(session, reporter) {
+  const admins = await User.find({ role: 'admin' }).select('_id').lean();
+  if (!admins.length) return;
+
+  const reporterName = reporter.name || 'The resident';
+  const message = `${reporterName} has tapped "I'm Safe" on their live location session — tracking is still active`;
+
+  const tasks = admins.map((admin) =>
+    Notification.create({
+      recipient:       admin._id,
+      emergencyReport: session.emergencyReport, // links bell click to EmergencyDetail
+      message,
+      priority:        'normal',
+      category:        'emergency',
+    })
+  );
+
+  await Promise.allSettled(tasks);
+}
+
 module.exports = {
   startSession,
   addLocationPing,
@@ -375,4 +582,8 @@ module.exports = {
   getSessionById,
   getActiveSessionForReport,
   addSessionNote,
+  sendSessionMessage,
+  getSessionMessages,
+  confirmSafe,
 };
+
