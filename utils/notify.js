@@ -410,7 +410,12 @@ async function notifyAdminsEmergency(report) {
       '=== REPORT DETAILS ===',
       `  Type        : ${report.type}`,
       `  Description : ${report.description}`,
-      `  Location    : ${report.location?.address || 'Not specified'}`,
+      // ⚠️  IMPORTANT: This is the STARTING location captured at the moment the
+      // alert fired — it is a one-time snapshot, NOT a live-updating coordinate.
+      // For a Live Location SOS report the person may have moved since this email
+      // was sent.  Always open the EmergencyDetail page (link below) to see the
+      // current position — it shows the most-recent GPS ping from the live session.
+      `  Starting location (at time of alert): ${report.location?.address || 'Not specified'}`,
       `  Reporter    : ${reporterName}`,
       `  Contact     : ${reporterEmail}`,
       // Only include the phone line when a number was provided — avoids a
@@ -418,7 +423,10 @@ async function notifyAdminsEmergency(report) {
       ...(report.contactPhone ? [`  Phone       : ${report.contactPhone}`] : []),
       `  Submitted   : ${new Date(report.createdAt || Date.now()).toUTCString()}`,
       '',
-      'View and manage all emergency reports here:',
+      '⚠️  DO NOT use the location above as the person\'s current position if',
+      'significant time has passed since this email arrived.  Open the',
+      'EmergencyDetail page below — it shows the real-time (or last known)',
+      'position from the live tracking session:',
       `  ${reportLink}`,
       '',
       '--- PRODUCTION DEPLOYMENT NOTE ---',
