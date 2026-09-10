@@ -135,12 +135,26 @@ const startSession = async (req, res) => {
  * hundred KB at most, well within MongoDB's 16 MB document limit).  Old entries
  * are NOT evicted during a live session; history is preserved in full.
  *
- * Body: { latitude: number, longitude: number, accuracy?: number }
+ * Piggybacked message delivery:
+ *   The response includes a `newMessages` array so the resident's web client
+ *   can receive admin messages through the ping it is already sending, without
+ *   a separate polling loop.  Pass `lastSeenMessageAt` (an ISO timestamp) in
+ *   the body to receive only messages created after that point; omit it (or
+ *   send null/undefined) to receive all messages for the session — this covers
+ *   the first ping after mount, before any message timestamp is known.
+ *
+ *   `newMessages` is purely additive — it does not change any existing response
+ *   field and does not affect the native mobile app, which reads only the
+ *   fields it already knows about.
+ *
+ * Body:
+ *   { latitude: number, longitude: number, accuracy?: number,
+ *     lastSeenMessageAt?: string }   ← ISO timestamp, optional
  */
 const addLocationPing = async (req, res) => {
   try {
     const { id } = req.params;
-    const { latitude, longitude, accuracy } = req.body;
+    const { latitude, longitude, accuracy, lastSeenMessageAt } = req.body;
 
     if (latitude == null || longitude == null) {
       return res.status(400).json({ message: 'latitude and longitude are required' });
@@ -193,7 +207,29 @@ const addLocationPing = async (req, res) => {
       },
     });
 
-    return res.status(200).json({ message: 'Ping recorded' });
+    // ── Piggyback: fetch any admin messages the client hasn't seen yet ─────────
+    // Build the filter: if lastSeenMessageAt is a valid timestamp, return only
+    // messages created strictly after it.  Otherwise (first ping after mount, or
+    // no messages ever received) return the entire message list for the session
+    // so the client can backfill without a separate GET call.
+    //
+    // This query runs AFTER the location update so a location-write failure (the
+    // $push above) short-circuits before we even reach this point — messages are
+    // never returned for a failed ping.
+    const msgFilter = { session: id };
+    const parsedCutoff = lastSeenMessageAt ? new Date(lastSeenMessageAt) : null;
+    if (parsedCutoff && !isNaN(parsedCutoff.getTime())) {
+      msgFilter.createdAt = { $gt: parsedCutoff };
+    }
+
+    const newMessages = await SessionMessage.find(msgFilter)
+      .sort({ createdAt: 1 })
+      .populate('sender', 'name role');
+
+    return res.status(200).json({
+      message:     'Ping recorded',
+      newMessages,          // always present; empty array when nothing new
+    });
   } catch (err) {
     console.error('[liveLocation] addLocationPing error:', err.message);
     res.status(500).json({ message: 'Server error recording location ping' });
