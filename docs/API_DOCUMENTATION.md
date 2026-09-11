@@ -2,7 +2,7 @@
 
 ## Smart Community Problem/Issue & Emergency Reporting and Resolution Platform
 
-**Version:** 1.0  
+**Version:** 2.0  
 **API Type:** REST API  
 **Backend Stack:** Node.js, Express.js, MongoDB and Mongoose  
 **Authentication:** JSON Web Token (JWT)  
@@ -28,9 +28,10 @@
 14. [Staff Endpoints](#14-staff-endpoints)
 15. [Administrator Endpoints](#15-administrator-endpoints)
 16. [Emergency Reporting Endpoints](#16-emergency-reporting-endpoints)
-17. [HTTP Status Codes](#17-http-status-codes)
-18. [Core Data Models](#18-core-data-models)
-19. [Security and Validation Features](#19-security-and-validation-features)
+17. [Live Location Sharing Endpoints](#17-live-location-sharing-endpoints)
+18. [HTTP Status Codes](#18-http-status-codes)
+19. [Core Data Models](#19-core-data-models)
+20. [Security and Validation Features](#20-security-and-validation-features)
 
 ---
 
@@ -56,6 +57,10 @@ The API also provides:
 - Password reset functionality
 - Account login protection and rate limiting
 - Issue status audit trails
+- Live location sharing for personal-safety emergencies
+- Live GPS location trails and session expiry handling
+- Silent admin-to-resident emergency messaging
+- Resident "I'm Safe" confirmation without stopping tracking
 
 The API exchanges data primarily in **JSON** format. The staff resolution-proof endpoint is an exception and accepts `multipart/form-data`.
 
@@ -1903,25 +1908,488 @@ GET /api/emergency-reports/stats
 
 ---
 
-# 17. HTTP Status Codes
+
+# 17. Live Location Sharing Endpoints
+
+Live Location Sharing is a dedicated personal-safety feature that allows an authenticated user to activate continuous location sharing during an emergency.
+
+When a session starts, CivicFix automatically creates a linked private `EmergencyReport` with the type `Live Location SOS`. This reuses the existing emergency notification pipeline so administrators are alerted as soon as live sharing is activated.
+
+The live-location system maintains:
+
+- A current GPS position
+- A chronological location trail
+- Session start and expiry times
+- Last successful location-ping time
+- Explicit `active`, `ended`, or `expired` session status
+- A linked private emergency report
+- A resident-authored emergency note
+- Silent admin-to-resident session messages
+- A resident `"I'm Safe"` confirmation timestamp
+
+### Live Location Session Lifecycle
+
+```text
+Active
+  ├── Resident/Admin explicitly ends → Ended
+  └── expiresAt is reached → Expired
+```
+
+> Session expiry is handled lazily on relevant reads/writes rather than by a background cron job. This suits the serverless deployment model.
+
+### Safety and Privacy Contract
+
+Live location sessions are treated as sensitive emergency data.
+
+- Location pings can only be submitted by the session owner.
+- A session can only be ended by its owner or an administrator.
+- Session details and report-linked live-location data are administrator-accessible through the dedicated live-location endpoints.
+- Emergency reports remain private and are not publicly listed or accessible to staff.
+- Admin messages to a resident are deliberately **not** sent through Web Push or OS-level notifications. The resident client retrieves them through the session-message endpoint/ping response so the device does not make a sound, vibrate, or display a banner.
+- The resident's `"I'm Safe"` action records a timestamp but **does not stop tracking or change the session status**. Only explicit `"Stop Sharing"` or administrator termination ends the session.
+
+---
+
+## 17.1 Start Live Location Sharing
+
+Creates a new live-location session and its linked private emergency report.
+
+### Endpoint
+
+```http
+POST /api/live-location/start
+```
+
+**Access:** Authenticated users
+
+### Request Body
+
+```json
+{
+  "durationMinutes": 60,
+  "latitude": 7.3775,
+  "longitude": 3.947,
+  "accuracy": 12,
+  "address": "Main Street, Ibadan"
+}
+```
+
+### Fields
+
+| Field | Type | Requirement |
+|---|---|---|
+| `durationMinutes` | Number | Optional; defaults to `60`; must be positive |
+| `latitude` | Number | Required |
+| `longitude` | Number | Required |
+| `accuracy` | Number | Optional; device-reported accuracy in metres |
+| `address` | String | Optional; defaults to `Live location — see map` |
+
+### Server Behaviour
+
+The endpoint:
+
+1. Creates an `EmergencyReport` with type `Live Location SOS`.
+2. Stores the initial GPS reading.
+3. Creates a `LiveLocationSession` linked to the emergency report.
+4. Sets `expiresAt` from the requested duration.
+5. Sends the existing urgent emergency notification to administrators.
+6. Returns identifiers needed by the client for subsequent location updates.
+
+### Successful Response — `201 Created`
+
+```json
+{
+  "message": "Live location session started",
+  "sessionId": "SESSION_ID",
+  "reportId": "EMERGENCY_REPORT_ID",
+  "expiresAt": "2026-09-11T12:00:00.000Z"
+}
+```
+
+### Possible Errors
+
+- `400` — Latitude/longitude missing
+- `400` — `durationMinutes` is not a positive number
+- `500` — Server error starting the session
+
+---
+
+## 17.2 Record a Live Location Ping
+
+Records the latest GPS position and appends it to the session's location trail.
+
+### Endpoint
+
+```http
+POST /api/live-location/:id/ping
+```
+
+**Access:** Session owner only
+
+### Request Body
+
+```json
+{
+  "latitude": 7.3781,
+  "longitude": 3.9478,
+  "accuracy": 10,
+  "lastSeenMessageAt": "2026-09-11T11:30:00.000Z"
+}
+```
+
+### Fields
+
+| Field | Type | Requirement |
+|---|---|---|
+| `latitude` | Number | Required |
+| `longitude` | Number | Required |
+| `accuracy` | Number | Optional |
+| `lastSeenMessageAt` | ISO timestamp | Optional |
+
+`lastSeenMessageAt` allows the resident client to receive only admin messages created after the supplied timestamp.
+
+### Behaviour
+
+Each accepted ping:
+
+- Replaces `currentLocation` with the freshest GPS reading.
+- Updates `lastPingAt`.
+- Appends the reading to `locationTrail`.
+- Returns any new admin session messages through the same response.
+
+The location trail has a safety ceiling of **3,000 pings**. In normal operation, the full history is preserved for realistic session durations.
+
+### Successful Response — `200 OK`
+
+```json
+{
+  "message": "Ping recorded",
+  "newMessages": []
+}
+```
+
+If admin messages exist, they are returned in `newMessages`, oldest first, with the sender populated with `name` and `role`.
+
+### Possible Errors
+
+- `400` — Latitude/longitude missing
+- `403` — Caller is not the session owner
+- `404` — Session not found
+- `410` — Session is ended or expired
+- `500` — Server error recording the ping
+
+---
+
+## 17.3 End a Live Location Session
+
+Explicitly terminates an active live-location session.
+
+### Endpoint
+
+```http
+POST /api/live-location/:id/end
+```
+
+**Access:** Session owner or administrator
+
+### Request Body
+
+No body is required.
+
+### Successful Response — `200 OK`
+
+```json
+{
+  "message": "Session ended",
+  "sessionId": "SESSION_ID"
+}
+```
+
+The session is marked:
+
+```text
+status = "ended"
+endedAt = current timestamp
+```
+
+The operation is idempotent, so a repeated request can safely set the session to `ended` again.
+
+---
+
+## 17.4 Get a Live Location Session
+
+Returns a single live-location session for administrator monitoring.
+
+### Endpoint
+
+```http
+GET /api/live-location/:id
+```
+
+**Access:** Administrator only
+
+### Successful Response — `200 OK`
+
+Returns the complete `LiveLocationSession` document with:
+
+- Reporter name and email
+- Linked emergency report details
+- Current location
+- Location trail
+- Session status
+- Start and expiry times
+- Last ping time
+- End time, when applicable
+- `"I'm Safe"` confirmation timestamp, when applicable
+
+For an active session whose `expiresAt` has passed, the API lazily changes its status to `expired` before returning it.
+
+### Possible Errors
+
+- `404` — Session not found
+- `500` — Server error fetching the session
+
+---
+
+## 17.5 Get Live Location Session by Emergency Report
+
+Retrieves the live-location session associated with a specific emergency report.
+
+### Endpoint
+
+```http
+GET /api/live-location/by-report/:reportId
+```
+
+**Access:** Administrator only
+
+### Successful Response — `200 OK`
+
+When a session exists:
+
+```json
+{
+  "session": {
+    "_id": "SESSION_ID",
+    "reporter": {},
+    "emergencyReport": "EMERGENCY_REPORT_ID",
+    "status": "active",
+    "currentLocation": {},
+    "locationTrail": [],
+    "expiresAt": "2026-09-11T12:00:00.000Z"
+  }
+}
+```
+
+When no session exists:
+
+```json
+{
+  "session": null
+}
+```
+
+The endpoint returns the most recently created session linked to the report, regardless of whether its status is `active`, `ended`, or `expired`. Active sessions are lazily expired when necessary.
+
+---
+
+## 17.6 Add or Update a Live Location Emergency Note
+
+Allows the session owner to provide a free-text description of what is happening.
+
+### Endpoint
+
+```http
+PATCH /api/live-location/:id/note
+```
+
+**Access:** Session owner only
+
+### Request Body
+
+```json
+{
+  "note": "I am currently moving toward a safer location."
+}
+```
+
+The note is stored in the linked `EmergencyReport`'s `description` field so administrators can see it alongside the live tracking information.
+
+### Successful Response — `200 OK`
+
+```json
+{
+  "message": "Note saved"
+}
+```
+
+### Possible Errors
+
+- `400` — Note is empty
+- `403` — Caller is not the session owner
+- `404` — Session not found
+
+---
+
+## 17.7 Send a Silent Admin Message to the Resident
+
+Allows an administrator to send a one-way message to the resident who owns a live-location session.
+
+### Endpoint
+
+```http
+POST /api/live-location/:id/messages
+```
+
+**Access:** Administrator only
+
+### Request Body
+
+```json
+{
+  "text": "We can see your location. Stay calm and keep moving if it is safe.",
+  "isPreset": false
+}
+```
+
+### Fields
+
+| Field | Type | Requirement |
+|---|---|---|
+| `text` | String | Required and must not be empty |
+| `isPreset` | Boolean | Optional; defaults to `false` |
+
+### Important Safety Behaviour
+
+This endpoint intentionally does **not** trigger Web Push or any OS-level notification.
+
+Messages are delivered silently through client-side retrieval/polling and the location-ping response. This prevents sound, vibration, or notification banners from potentially exposing the resident during a dangerous situation.
+
+### Successful Response — `201 Created`
+
+```json
+{
+  "message": "Message sent",
+  "data": {
+    "_id": "MESSAGE_ID",
+    "session": "SESSION_ID",
+    "sender": "ADMIN_USER_ID",
+    "text": "We can see your location.",
+    "isPreset": false,
+    "createdAt": "2026-09-11T11:30:00.000Z"
+  }
+}
+```
+
+---
+
+## 17.8 Get Live Location Session Messages
+
+Returns messages belonging to a live-location session in chronological order.
+
+### Endpoint
+
+```http
+GET /api/live-location/:id/messages
+```
+
+**Access:** Session owner or administrator
+
+### Successful Response — `200 OK`
+
+```json
+{
+  "messages": [
+    {
+      "_id": "MESSAGE_ID",
+      "session": "SESSION_ID",
+      "sender": {
+        "_id": "ADMIN_USER_ID",
+        "name": "Administrator",
+        "role": "admin"
+      },
+      "text": "We can see your location.",
+      "isPreset": false,
+      "createdAt": "2026-09-11T11:30:00.000Z"
+    }
+  ]
+}
+```
+
+Messages are sorted from oldest to newest.
+
+### Possible Errors
+
+- `403` — Caller is neither the session owner nor an administrator
+- `404` — Session not found
+
+---
+
+## 17.9 Confirm "I'm Safe"
+
+Records the resident's `"I'm Safe"` confirmation.
+
+### Endpoint
+
+```http
+POST /api/live-location/:id/confirm-safe
+```
+
+**Access:** Session owner only
+
+### Request Body
+
+No body is required.
+
+### Successful Response — `200 OK`
+
+```json
+{
+  "message": "Confirmation recorded",
+  "reporterConfirmedSafeAt": "2026-09-11T11:35:00.000Z",
+  "sessionStatus": "active"
+}
+```
+
+### Critical Safety Invariant
+
+The endpoint **does not**:
+
+- End the session
+- Change `session.status`
+- Stop GPS tracking
+
+The confirmation is informational only. It records that the resident acknowledged the situation and sends an **in-app, normal-priority notification to administrators**.
+
+The resident must explicitly use the session end action to stop sharing.
+
+### Possible Errors
+
+- `403` — Caller is not the session owner
+- `404` — Session not found
+
+---
+
+# 18. HTTP Status Codes
 
 | Status Code | Meaning | CivicFix Usage |
 |---|---|---|
 | `200 OK` | Request successful | Successful reads and updates |
-| `201 Created` | Resource created | Registration, issue creation, comments, categories and emergency reports |
+| `201 Created` | Resource created | Registration, issue creation, comments, categories, emergency reports and live-location sessions/messages |
 | `400 Bad Request` | Invalid request | Missing or invalid data |
 | `401 Unauthorized` | Authentication failed | Missing, invalid or expired JWT |
 | `403 Forbidden` | Permission denied | User does not have the required role or resource ownership |
-| `404 Not Found` | Resource does not exist | Invalid or missing issue, user, notification or report |
+| `404 Not Found` | Resource does not exist | Invalid or missing issue, user, notification, report or live-location session |
 | `409 Conflict` | Resource conflict | Duplicate user/category or category still in use |
 | `423 Locked` | Account temporarily locked | Too many failed login attempts |
 | `429 Too Many Requests` | Rate limit exceeded | Excessive login or password-reset attempts |
+| `410 Gone` | Session no longer active | Live-location session has ended or expired and cannot accept pings |
 | `500 Internal Server Error` | Unexpected server failure | Unhandled backend errors |
 | `503 Service Unavailable` | Service feature unavailable | Push notifications not configured |
 
 ---
 
-# 18. Core Data Models
+# 19. Core Data Models
 
 ## 18.1 User
 
@@ -2093,7 +2561,60 @@ EmergencyReport
 
 ---
 
-# 19. Security and Validation Features
+
+## 18.8 LiveLocationSession
+
+```text
+LiveLocationSession
+├── reporter
+├── emergencyReport
+├── status
+├── startedAt
+├── expiresAt
+├── endedAt
+├── currentLocation
+│   ├── latitude
+│   ├── longitude
+│   ├── accuracy
+│   └── timestamp
+├── locationTrail[]
+│   ├── latitude
+│   ├── longitude
+│   ├── accuracy
+│   └── timestamp
+├── lastPingAt
+├── reporterConfirmedSafeAt
+├── createdAt
+└── updatedAt
+```
+
+### Session Statuses
+
+```text
+active
+ended
+expired
+```
+
+`locationTrail` is capped at 3,000 entries by the live-location controller. `expiresAt` is required so every session has a finite lifetime.
+
+---
+
+## 18.9 SessionMessage
+
+```text
+SessionMessage
+├── session
+├── sender
+├── text
+├── isPreset
+├── createdAt
+└── updatedAt
+```
+
+`sender` is an administrator. Messages are sorted chronologically and delivered silently to the resident through application-level retrieval rather than OS-level push notifications.
+
+# 20. Security and Validation Features
 
 The CivicFix API implements several security and reliability measures.
 
@@ -2144,6 +2665,12 @@ Issue and emergency media are uploaded directly to Cloudinary. The backend gener
 ## Emergency Video Verification
 
 Emergency video duration is verified independently through Cloudinary's server-side API rather than trusting client-supplied metadata.
+
+## Live Location Safety Controls
+
+Live location access is restricted by session ownership and administrator privileges. Session expiry is checked lazily on relevant reads and writes, and location history is bounded to prevent unbounded document growth.
+
+Admin-to-resident live-session messages deliberately bypass push/system notifications and are delivered through silent application-level retrieval. The resident's `reporterConfirmedSafeAt` timestamp never changes the session lifecycle.
 
 ## Authorization Ownership Checks
 
@@ -2203,6 +2730,15 @@ The API verifies resource ownership where required, including:
 | POST | `/api/admin/issues/bulk-reject` | Admin |
 | PATCH | `/api/admin/issues/:id/assign` | Admin |
 | PATCH | `/api/admin/issues/:id/status` | Admin |
+| POST | `/api/live-location/start` | Authenticated |
+| POST | `/api/live-location/:id/ping` | Session Owner |
+| POST | `/api/live-location/:id/end` | Session Owner/Admin |
+| GET | `/api/live-location/:id` | Admin |
+| GET | `/api/live-location/by-report/:reportId` | Admin |
+| PATCH | `/api/live-location/:id/note` | Session Owner |
+| POST | `/api/live-location/:id/messages` | Admin |
+| GET | `/api/live-location/:id/messages` | Session Owner/Admin |
+| POST | `/api/live-location/:id/confirm-safe` | Session Owner |
 | GET | `/api/emergency-reports/emergency-number` | Public |
 | POST | `/api/emergency-reports` | Authenticated |
 | GET | `/api/emergency-reports/my-reports` | Authenticated |

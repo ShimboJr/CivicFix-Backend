@@ -4,7 +4,7 @@
 
 CivicFix is a full-stack web application designed to help communities report, manage, and track public infrastructure and environmental problems.
 
-Residents can report issues such as damaged roads, broken streetlights, flooding, illegal waste disposal, and other community concerns. Administrators can review and assign issues to staff members, while staff can provide progress updates and resolution evidence.
+Residents can report issues such as damaged roads, broken streetlights, flooding, illegal waste disposal, and other community concerns. Administrators can review and assign issues to staff members, while staff can provide progress updates and resolution evidence. CivicFix also provides private emergency reporting and live location sharing for situations where a resident's personal safety may be at risk.
 
 🌐 **Live Application:** [Visit CivicFix](https://sjr-civicfix.vercel.app/)  
 💻 **Backend Repository:** [CivicFix Backend](https://github.com/ShimboJr/CivicFix-Backend)
@@ -49,6 +49,9 @@ Issue Resolved
 - Receive notifications and status updates
 - Detect potentially nearby or duplicate issues
 - Submit private emergency reports
+- Share live location during an active personal-safety emergency
+- Receive silent safety messages from administrators
+- Send an "I'm Safe" confirmation without automatically stopping tracking
 
 ### 👨‍💼 Administrators
 
@@ -88,6 +91,28 @@ Issue Resolved
 - 🚨 Private Emergency Reporting
 - 🛡️ Login Rate Limiting and Account Protection
 - 🔑 Secure Password Reset
+- 📍 Live Location Sharing for Personal Safety
+- 🗺️ Real-Time GPS Location Trail and Movement History
+- 💬 Silent Admin-to-Resident Emergency Messaging
+- 🛡️ "I'm Safe" Confirmation Without Automatic Tracking Termination
+
+---
+
+## 📍 Live Location Sharing
+
+CivicFix includes a dedicated live location sharing feature for personal-safety emergencies.
+
+When a resident activates live location sharing:
+
+1. A private `Live Location SOS` emergency report is automatically created.
+2. Administrators are immediately alerted through the existing emergency notification pipeline.
+3. The resident's current GPS location is continuously updated during the session.
+4. A location trail is maintained so administrators can review movement history.
+5. The session has a defined expiry time and can also be explicitly ended by the resident or an administrator.
+6. Administrators can send silent in-app messages to the resident without triggering sound, vibration, or OS-level notification banners.
+7. The resident can tap **I'm Safe** to notify administrators while location tracking continues.
+
+This feature is designed around privacy and safety: live location data is not publicly listed, and the resident's safe confirmation does not automatically terminate tracking.
 
 ---
 
@@ -166,6 +191,14 @@ Staff members can view assigned issues, prioritize urgent reports, and manage th
 
 ---
 
+### 📍 Live Location Sharing
+
+During a personal-safety emergency, residents can activate live location sharing so authorized administrators can monitor their current position and movement history.
+
+![Live Location Sharing](./screenshots/live-location-sharing.jpg)
+
+---
+
 ### 🚨 Emergency Reporting
 
 CivicFix includes a dedicated private emergency reporting system that prominently encourages users to contact emergency services when they are in immediate danger.
@@ -235,7 +268,7 @@ npm start
 
 ## 🔌 API Documentation
 
-CivicFix provides a RESTful API for authentication, issue management, notifications, administrative operations, staff workflows, media uploads, and emergency reporting.
+CivicFix provides a RESTful API for authentication, issue management, notifications, administrative operations, staff workflows, media uploads, emergency reporting, and live location sharing.
 
 For detailed endpoint-by-endpoint documentation, see:
 
@@ -315,7 +348,7 @@ CivicFix was developed to:
 Potential future enhancements include:
 
 - AI-assisted issue categorization
-- Native mobile applications
+- Native mobile applications with deeper background location support
 - Government and emergency service integrations
 - SMS notifications
 - Multi-language support
