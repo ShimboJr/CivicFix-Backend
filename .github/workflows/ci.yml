@@ -1,6 +1,8 @@
 # .github/workflows/ci.yml  (CivicFix-Backend)
 #
 # Runs ESLint and the Jest test suite on every push and pull_request to main.
+# On a direct push to main that passes CI, deploys to Vercel production and
+# runs a post-deploy health check against /api/health.
 #
 # NOTE — monorepo context:
 #   The frontend lives in a separate repository (CivicFix-Frontend) and has its
@@ -10,6 +12,10 @@
 #   All steps run on every push regardless of which files changed.  Path-based
 #   filtering would speed things up but isn't worth the added complexity at this
 #   project's current size.
+#
+# NOTE — Vercel auto-deploy:
+#   Vercel's automatic Git deployment for production has been disabled.
+#   Production is updated exclusively via the `deploy` job below.
 
 name: Backend CI
 
@@ -59,3 +65,87 @@ jobs:
           EMAIL_PASS:             test
           CLIENT_URL:             http://localhost:5173
         run: npm test
+
+  # ─── Production Deployment ───────────────────────────────────────────────────
+  # Runs only on a direct push to main (never on pull requests) and only after
+  # the `backend` job (Lint + Test) has succeeded.  If `backend` fails this job
+  # is skipped entirely — production is never touched.
+  deploy:
+    name: Deploy to Vercel (production)
+    needs: [backend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    env:
+      VERCEL_TOKEN:      ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID:     ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install the Vercel CLI globally so the subsequent steps can call `vercel`.
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      # Pull Vercel project metadata and production environment variables into
+      # the local .vercel/ directory.  --yes skips the interactive prompts.
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+
+      # Build the project using Vercel's build pipeline.  The output is placed
+      # in .vercel/output/ and referenced by the deploy step.
+      - name: Build project
+        run: vercel build --prod --token=$VERCEL_TOKEN
+
+      # Deploy the pre-built output to production and capture the deployment URL
+      # so the health-check step can target it directly.
+      - name: Deploy to production
+        id: deploy
+        run: |
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN)
+          echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
+
+      # ─── Post-deploy health check ─────────────────────────────────────────────
+      # This is an independent runtime safety net.  CI passing proves the code
+      # was correct in the test environment; this step proves the deployed
+      # function actually responds without a server error.
+      #
+      # Strategy:
+      #   • Retry up to 6 times with 10-second back-off to allow for cold starts.
+      #   • Fail the workflow (and surface an error) if the server returns a 5xx
+      #     or is unreachable — anything in the 2xx/3xx/4xx range is treated as
+      #     "the server is alive and running".
+      - name: Post-deploy health check
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          echo "Running health check against ${DEPLOY_URL}/api/health"
+          for i in 1 2 3 4 5 6; do
+            HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              --max-time 15 "${DEPLOY_URL}/api/health" || echo "000")
+            echo "Attempt ${i}: HTTP ${HTTP_STATUS}"
+            if [ "$HTTP_STATUS" -ge 500 ] 2>/dev/null; then
+              echo "Server returned ${HTTP_STATUS} — deployment is unhealthy."
+              if [ "$i" -lt 6 ]; then
+                echo "Retrying in 10 s..."
+                sleep 10
+              else
+                echo "Health check failed after 6 attempts. Failing workflow."
+                exit 1
+              fi
+            elif [ "$HTTP_STATUS" = "000" ]; then
+              echo "Could not reach the deployment endpoint."
+              if [ "$i" -lt 6 ]; then
+                echo "Retrying in 10 s..."
+                sleep 10
+              else
+                echo "Health check failed after 6 attempts. Failing workflow."
+                exit 1
+              fi
+            else
+              echo "Health check passed (HTTP ${HTTP_STATUS})."
+              exit 0
+            fi
+          done
