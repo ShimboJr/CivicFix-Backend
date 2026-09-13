@@ -2,6 +2,7 @@ const Notification            = require('../models/Notification');
 const Issue                   = require('../models/Issue');
 const User                    = require('../models/User');
 const { transporter, FROM_ADDRESS } = require('../config/email');
+const { sendPushToAdmins }    = require('./webPush');
 
 /**
  * notifyStatusChange(issueId, recipientId, newStatus)
@@ -318,7 +319,13 @@ async function notifyStaffAssignment(staffUserId, issues) {
  * notifyAdminsEmergency(report)
  *
  * Fires immediately after an EmergencyReport is successfully saved.
- * Sends BOTH an in-app notification AND an email to every admin user.
+ * Sends in-app notifications, emails, AND a Web Push to every admin — the
+ * single, complete "alert every admin through every channel" function.
+ *
+ * Any caller (createEmergencyReport, liveLocationController.startSession, or
+ * any future trigger) automatically gets all three channels simply by calling
+ * this function — no separate sendPushToAdmins call is needed or should be
+ * made at the call site.
  *
  * Deliberately distinct from notifyAdminsNewIssue:
  *   - Notification is marked  priority: 'urgent'  and  category: 'emergency'
@@ -326,6 +333,8 @@ async function notifyStaffAssignment(staffUserId, issues) {
  *     grey/blue used for routine pothole or streetlight reports.
  *   - Email subject is prefixed with the 🚨 emoji and the word URGENT to survive
  *     even a heavily filtered inbox.
+ *   - Web Push fires after the per-admin fan-out so admins receive an immediate
+ *     browser/OS alert even if the dashboard is not open.
  *   - No `issue` ref is set on the Notification document — EmergencyReport is
  *     a separate collection from Issue.
  *
@@ -333,12 +342,10 @@ async function notifyStaffAssignment(staffUserId, issues) {
  * hiccup never prevents the remaining admins from being alerted.
  *
  * ⚠️  PRODUCTION DEPLOYMENT NOTE:
- *   Email is insufficient as the sole alerting channel for an active emergency.
- *   Email response times (minutes to hours) are too slow for an armed robbery,
- *   medical emergency, or active threat.  A production deployment MUST layer in
- *   SMS (e.g. Twilio) or an automated phone call to an on-call admin immediately
- *   after this function.  Email is retained here only as a secondary record, not
- *   as the primary alert mechanism.
+ *   Push + email are insufficient as the sole alerting channels for an active
+ *   emergency.  A production deployment MUST layer in SMS (e.g. Twilio) or an
+ *   automated phone call to an on-call admin.  Email is retained here only as a
+ *   secondary record, not as the primary alert mechanism.
  *
  * @param {import('../models/EmergencyReport')} report — the freshly saved
  *   EmergencyReport document.  Must have at minimum: _id, type, description,
@@ -472,6 +479,20 @@ async function notifyAdminsEmergency(report) {
       );
     }
   });
+
+  // ── Web Push (speed channel — fires once after all in-app/email work) ────
+  // sendPushToAdmins is fire-and-forget: it always resolves, never throws.
+  // Calling it here — inside notifyAdminsEmergency — means EVERY trigger path
+  // (regular emergency reports, Live Location SOS sessions, any future caller)
+  // automatically sends a push without needing a separate call at the call site.
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+  sendPushToAdmins({
+    title: '🚨 Emergency Report',
+    body:  `${report.type} — ${report.location?.address || 'Location not specified'}`,
+    url:   `${clientUrl}/admin/emergency-reports/${report._id}`,
+  }).catch((err) =>
+    console.error('[notify] sendPushToAdmins failed inside notifyAdminsEmergency:', err.message)
+  );
 }
 
 module.exports = {

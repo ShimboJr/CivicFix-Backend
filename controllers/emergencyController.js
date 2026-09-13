@@ -3,7 +3,6 @@ const mongoose                  = require('mongoose');
 const EmergencyReport           = require('../models/EmergencyReport');
 const cloudinary                = require('../config/cloudinary');
 const { notifyAdminsEmergency } = require('../utils/notify');
-const { sendPushToAdmins }      = require('../utils/webPush');
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 // 15-second user-facing cap + 1-second buffer for encoding rounding.
@@ -235,11 +234,9 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
     ...(contactPhone ? { contactPhone: String(contactPhone).trim() } : {}),
   });
 
-  // Notify all admins — email + Web Push (both fire-and-forget) ───────────────
-  // Both calls are independently wrapped so a failure in either one never
-  // prevents the 201 response from reaching the reporter.
-
-  // 1. Email (permanent record — existing behaviour, unchanged)
+  // Notify all admins through every channel — email, in-app, and Web Push —
+  // all in one fire-and-forget call.  notifyAdminsEmergency now handles push
+  // internally, so no separate sendPushToAdmins call is needed here.
   try {
     notifyAdminsEmergency(report).catch((err) =>
       console.error(
@@ -250,25 +247,6 @@ const createEmergencyReport = asyncHandler(async (req, res) => {
   } catch (err) {
     console.error(
       '[createEmergencyReport] notifyAdminsEmergency threw synchronously:',
-      err.message
-    );
-  }
-
-  // 2. Web Push (speed channel — layered alongside email, not replacing it)
-  try {
-    sendPushToAdmins({
-      title: '🚨 Emergency Report',
-      body:  `${report.type} — ${report.location?.address || 'Location not specified'}`,
-      url:   `${process.env.CLIENT_URL || 'http://localhost:5173'}/admin/emergency-reports/${report._id}`,
-    }).catch((err) =>
-      console.error(
-        '[createEmergencyReport] sendPushToAdmins unhandled rejection:',
-        err.message
-      )
-    );
-  } catch (err) {
-    console.error(
-      '[createEmergencyReport] sendPushToAdmins threw synchronously:',
       err.message
     );
   }
