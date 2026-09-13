@@ -1,5 +1,8 @@
 require('dotenv').config();
 
+// CI GATE TEST — intentional lint error; remove before merging
+const LINT_FAILURE_INTENTIONAL = 'this variable is never used';
+
 const app       = require('./app');
 const connectDB = require('./config/db');
 
