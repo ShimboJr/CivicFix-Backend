@@ -6,11 +6,6 @@ const connectDB = require('./config/db');
 // ─── Connect to Database ─────────────────────────────────────────────────────
 connectDB();
 
-//CI/CD Test
-const come = "now";
-const come = "now";
-
-
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 
