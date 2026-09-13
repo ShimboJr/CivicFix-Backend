@@ -485,7 +485,7 @@ async function notifyAdminsEmergency(report) {
   // Calling it here — inside notifyAdminsEmergency — means EVERY trigger path
   // (regular emergency reports, Live Location SOS sessions, any future caller)
   // automatically sends a push without needing a separate call at the call site.
-  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+  // `clientUrl` is already declared above (line 385) and is in scope here.
   sendPushToAdmins({
     title: '🚨 Emergency Report',
     body:  `${report.type} — ${report.location?.address || 'Location not specified'}`,
