@@ -100,31 +100,39 @@ jobs:
         run: vercel build --prod --token=$VERCEL_TOKEN
 
       # Deploy the pre-built output to production and capture the deployment URL
-      # so the health-check step can target it directly.
+      # so the health-check and promote steps can target it directly.
+      #
+      # stderr is redirected to a temp file and re-emitted to the step's own
+      # stderr so diagnostic output from the CLI is still visible in the log
+      # without polluting the stdout capture used to extract the URL.
       - name: Deploy to production
         id: deploy
         run: |
-          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN)
-          echo "url=$DEPLOY_URL" >> "$GITHUB_OUTPUT"
+          vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN \
+            2>deploy_stderr.txt \
+            | tee deploy_stdout.txt
+          cat deploy_stderr.txt >&2
+          NEW_DEPLOYMENT_URL=$(cat deploy_stdout.txt | grep -E '^https://' | tail -1 | tr -d '[:space:]')
+          echo "New deployment URL: ${NEW_DEPLOYMENT_URL}"
+          echo "url=${NEW_DEPLOYMENT_URL}" >> "$GITHUB_OUTPUT"
 
-      # ─── Post-deploy health check ─────────────────────────────────────────────
-      # This is an independent runtime safety net.  CI passing proves the code
-      # was correct in the test environment; this step proves the deployed
-      # function actually responds without a server error.
+      # ─── Post-deploy health check (new deployment URL) ────────────────────────
+      # Verifies the freshly-deployed function is healthy BEFORE we alias the
+      # custom production domain to it.  Gates the promote step entirely.
       #
       # Strategy:
       #   • Retry up to 6 times with 10-second back-off to allow for cold starts.
       #   • Fail the workflow (and surface an error) if the server returns a 5xx
       #     or is unreachable — anything in the 2xx/3xx/4xx range is treated as
       #     "the server is alive and running".
-      - name: Post-deploy health check
+      - name: Health check — new deployment URL
         env:
-          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+          NEW_DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
         run: |
-          echo "Running health check against ${DEPLOY_URL}/api/health"
+          echo "Running health check against ${NEW_DEPLOYMENT_URL}/api/health"
           for i in 1 2 3 4 5 6; do
             HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
-              --max-time 15 "${DEPLOY_URL}/api/health" || echo "000")
+              --max-time 15 "${NEW_DEPLOYMENT_URL}/api/health" || echo "000")
             echo "Attempt ${i}: HTTP ${HTTP_STATUS}"
             if [ "$HTTP_STATUS" -ge 500 ] 2>/dev/null; then
               echo "Server returned ${HTTP_STATUS} — deployment is unhealthy."
@@ -132,7 +140,7 @@ jobs:
                 echo "Retrying in 10 s..."
                 sleep 10
               else
-                echo "Health check failed after 6 attempts. Failing workflow."
+                echo "Health check failed after 6 attempts. Aborting promote."
                 exit 1
               fi
             elif [ "$HTTP_STATUS" = "000" ]; then
@@ -141,11 +149,63 @@ jobs:
                 echo "Retrying in 10 s..."
                 sleep 10
               else
-                echo "Health check failed after 6 attempts. Failing workflow."
+                echo "Health check failed after 6 attempts. Aborting promote."
                 exit 1
               fi
             else
-              echo "Health check passed (HTTP ${HTTP_STATUS})."
+              echo "Health check passed (HTTP ${HTTP_STATUS}). Proceeding to promote."
+              exit 0
+            fi
+          done
+
+      # ─── Promote to custom production domain ──────────────────────────────────
+      # Because "Auto-assign Custom Production Domains" is disabled on this
+      # project, `vercel deploy --prod` creates a production-flagged deployment
+      # but does NOT move the custom domain alias.  An explicit `vercel promote`
+      # is required to make civicfix-backend.vercel.app serve the new build.
+      #
+      # --yes suppresses the interactive confirmation prompt.
+      - name: Promote to production domain
+        env:
+          NEW_DEPLOYMENT_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          echo "Promoting ${NEW_DEPLOYMENT_URL} to production domain..."
+          vercel promote "${NEW_DEPLOYMENT_URL}" --yes --token=$VERCEL_TOKEN
+          echo "Promote command completed."
+
+      # ─── Post-promote verification (custom domain) ────────────────────────────
+      # Confirms the promotion actually took effect by hitting the custom domain
+      # directly — not just trusting that the promote command exited 0.
+      #
+      # Uses the same retry strategy as the deployment health check above.
+      - name: Verify custom production domain
+        run: |
+          PROD_DOMAIN="https://civicfix-backend.vercel.app"
+          echo "Verifying custom domain: ${PROD_DOMAIN}/api/health"
+          for i in 1 2 3 4 5 6; do
+            HTTP_STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" \
+              --max-time 15 "${PROD_DOMAIN}/api/health" || echo "000")
+            echo "Attempt ${i}: HTTP ${HTTP_STATUS}"
+            if [ "$HTTP_STATUS" -ge 500 ] 2>/dev/null; then
+              echo "Custom domain returned ${HTTP_STATUS} — promote may have failed."
+              if [ "$i" -lt 6 ]; then
+                echo "Retrying in 10 s..."
+                sleep 10
+              else
+                echo "Custom domain verification failed after 6 attempts."
+                exit 1
+              fi
+            elif [ "$HTTP_STATUS" = "000" ]; then
+              echo "Could not reach the custom domain."
+              if [ "$i" -lt 6 ]; then
+                echo "Retrying in 10 s..."
+                sleep 10
+              else
+                echo "Custom domain verification failed after 6 attempts."
+                exit 1
+              fi
+            else
+              echo "Custom domain verification passed (HTTP ${HTTP_STATUS}). Deploy complete."
               exit 0
             fi
           done
