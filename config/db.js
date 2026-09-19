@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const connectDB = async () => {
-  // ── Guard 1: test mode ───────────────────────────────────────────────────
+  // ── Guard 1: test mode ──────────────────────────────────────────────────
   if (process.env.NODE_ENV === 'test') return;
 
   // ── Guard 2: already connected ───────────────────────────────────────────
