@@ -6,15 +6,27 @@ const express   = require('express');
 const cors      = require('cors');
 const helmet    = require('helmet');
 const morgan    = require('morgan');
+const mongoose  = require('mongoose');
 const connectDB = require('./config/db');
 
 // ─── Database connection ──────────────────────────────────────────────────────
 // Called here (in addition to server.js) so the connection is established on
 // every cold start regardless of which file Vercel treats as the entry point.
 if (process.env.NODE_ENV !== 'test') {
-  connectDB().catch((err) => {
-    console.error('[CivicFix] Startup DB connection failed:', err.message);
-  });
+  connectDB()
+    .then(() => {
+      // Log disconnect/reconnect events so it's obvious when Atlas drops
+      // idle connections (common on M0 free tier after quiet periods).
+      mongoose.connection.on('disconnected', () =>
+        console.warn('[CivicFix] MongoDB disconnected — will reconnect on next request.')
+      );
+      mongoose.connection.on('error', (err) =>
+        console.error('[CivicFix] MongoDB connection error:', err.message)
+      );
+    })
+    .catch((err) => {
+      console.error('[CivicFix] Startup DB connection failed:', err.message);
+    });
 }
 
 const app = express();
@@ -58,9 +70,10 @@ if (process.env.NODE_ENV === 'development') {
 
 // ─── Per-request DB reconnect guard ─────────────────────────────────────────
 // Serverless warm instances can lose their MongoDB connection between
-// invocations.  This middleware awaits connectDB() before each request reaches
-// a route handler.  The readyState guard in db.js makes it a no-op when the
-// connection is already live, so there is no overhead on normal requests.
+// invocations.  This middleware calls connectDB() before each request.
+// db.js checks mongoose.connection.readyState and returns immediately when
+// already connected (readyState 1) or mid-connect (readyState 2), so there
+// is no overhead on normal requests and no duplicate pool creation on bursts.
 if (process.env.NODE_ENV !== 'test') {
   app.use(async (_req, _res, next) => {
     try {
