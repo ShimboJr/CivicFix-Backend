@@ -12,6 +12,7 @@ const {
   updateReportStatus,
   getEmergencyNumber,
   getEmergencyStats,
+  getLiveReportIds,
 } = require('../controllers/emergencyController');
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -71,6 +72,13 @@ router.get('/my-reports', protect, getMyEmergencyReports);
 //     { avgAckMinutes, staleNewCount, byType: [{ type, count }] }
 //   Used by the AdminEmergencyReports page header strip.
 router.get('/stats',                   protect, authorize('admin'), getEmergencyStats);
+// GET /live-ids
+//   Returns { liveReportIds: string[] } — the minimal set of report ids that
+//   currently have an active live-location session.  One query replaces N
+//   parallel GET /live-location/by-report/:id calls from the client.
+//   IMPORTANT: must be declared before /:id so Express does not coerce
+//   the literal string "live-ids" into a MongoDB ObjectId.
+router.get('/live-ids',                protect, authorize('admin'), getLiveReportIds);
 router.get('/',                        protect, authorize('admin'), getAllEmergencyReports);
 router.get('/:id',                     protect, authorize('admin'), getEmergencyReportById);
 router.put('/:id/acknowledge',         protect, authorize('admin'), acknowledgeReport);

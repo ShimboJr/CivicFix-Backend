@@ -277,37 +277,24 @@ const getMyEmergencyReports = asyncHandler(async (req, res) => {
 // Sort order: 'New' reports are the most urgent (no one has looked at them).
 // Within each status bucket, sort newest-first.
 //
-// We implement the custom status-priority sort in MongoDB's aggregation $addFields
-// + $sort rather than in JS, so it works correctly on large datasets without
-// pulling all documents into memory.
-const getAllEmergencyReports = asyncHandler(async (_req, res) => {
-  const reports = await EmergencyReport.aggregate([
-    // ── Assign a numeric urgency score to each status ─────────────────────
-    // Lower number = shown first.  'New' = 0 (most urgent, unacknowledged).
-    {
-      $addFields: {
-        _statusOrder: {
-          $switch: {
-            branches: [
-              { case: { $eq: ['$status', 'New'] },          then: 0 },
-              { case: { $eq: ['$status', 'Acknowledged'] },  then: 1 },
-              { case: { $eq: ['$status', 'Escalated'] },     then: 2 },
-              { case: { $eq: ['$status', 'Resolved'] },      then: 3 },
-              { case: { $eq: ['$status', 'False Alarm'] },   then: 4 },
-            ],
-            default: 9,
-          },
-        },
-      },
-    },
+// Pagination strategy:
+//   - 'New' (unacknowledged) reports are ALWAYS returned in full — admins must
+//     never miss an urgent report due to a page boundary.
+//   - All other statuses are paginated via ?page=1&limit=20 query params.
+//
+// Response shape:
+//   { newReports: [...], otherReports: [...], pagination: { page, limit, total, totalPages } }
+//
+// Legacy clients that expected a plain array can detect the new shape by
+// checking for the `newReports` key.
+const getAllEmergencyReports = asyncHandler(async (req, res) => {
+  const page  = Math.max(1, parseInt(req.query.page,  10) || 1);
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const skip  = (page - 1) * limit;
 
-    // ── Primary: urgency order.  Secondary: newest first within each group ─
-    { $sort: { _statusOrder: 1, createdAt: -1 } },
-
-    // ── Drop the helper field from the output ─────────────────────────────
-    { $unset: '_statusOrder' },
-
-    // ── Populate reporter (name + email for follow-up contact) ────────────
+  // ── Shared aggregation pipeline stages ─────────────────────────────────
+  // Populate reporter and acknowledgedBy for display.
+  const populateStages = [
     {
       $lookup: {
         from:         'users',
@@ -317,15 +304,12 @@ const getAllEmergencyReports = asyncHandler(async (_req, res) => {
         as:           'reporter',
       },
     },
-    // $lookup always produces an array — unwrap to a single object
     {
       $unwind: {
         path:                       '$reporter',
-        preserveNullAndEmptyArrays: true, // keep the report even if user was deleted
+        preserveNullAndEmptyArrays: true,
       },
     },
-
-    // ── Populate acknowledgedBy (name only for display) ───────────────────
     {
       $lookup: {
         from:         'users',
@@ -341,9 +325,65 @@ const getAllEmergencyReports = asyncHandler(async (_req, res) => {
         preserveNullAndEmptyArrays: true,
       },
     },
+  ];
+
+  // ── 'New' reports: always return all, sorted newest-first ──────────────
+  const newReports = await EmergencyReport.aggregate([
+    { $match: { status: 'New' } },
+    { $sort:  { createdAt: -1 } },
+    ...populateStages,
   ]);
 
-  res.status(200).json(reports);
+  // ── Paginated 'other' reports (every non-New status) ──────────────────
+  // Use $facet to get both the page of results AND the total count in a
+  // single database round-trip.
+  const [facetResult] = await EmergencyReport.aggregate([
+    { $match: { status: { $ne: 'New' } } },
+    // Sort: Acknowledged → Escalated → Resolved → False Alarm, newest first
+    {
+      $addFields: {
+        _statusOrder: {
+          $switch: {
+            branches: [
+              { case: { $eq: ['$status', 'Acknowledged'] }, then: 0 },
+              { case: { $eq: ['$status', 'Escalated'] },    then: 1 },
+              { case: { $eq: ['$status', 'Resolved'] },     then: 2 },
+              { case: { $eq: ['$status', 'False Alarm'] },  then: 3 },
+            ],
+            default: 9,
+          },
+        },
+      },
+    },
+    { $sort: { _statusOrder: 1, createdAt: -1 } },
+    { $unset: '_statusOrder' },
+    {
+      $facet: {
+        // Page of documents
+        data: [
+          { $skip: skip },
+          { $limit: limit },
+          ...populateStages,
+        ],
+        // Total count (no skip/limit)
+        totalCount: [{ $count: 'count' }],
+      },
+    },
+  ]);
+
+  const otherReports = facetResult?.data        ?? [];
+  const total        = facetResult?.totalCount?.[0]?.count ?? 0;
+
+  res.status(200).json({
+    newReports,
+    otherReports,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+    },
+  });
 });
 
 
@@ -551,6 +591,39 @@ const getEmergencyStats = asyncHandler(async (_req, res) => {
 });
 
 
+// ─── @desc    Return the set of report IDs that currently have an active live
+//             location session — used by the admin list page to batch-resolve
+//             the LIVE badge without one HTTP request per report.
+// ─── @route   GET /api/emergency-reports/live-ids
+// ─── @access  Private, admin only
+//
+// Instead of the old pattern (N separate GET /live-location/by-report/:id calls
+// issued in parallel from the client), this endpoint does a single aggregation:
+//   1. Find all LiveLocationSession docs where status = 'active' AND expiresAt > now
+//   2. Project just the emergencyReport field
+// The result is a JSON array of report id strings that the client turns into a
+// Set<string> for O(1) lookup when rendering each row.
+//
+// 'ended' and 'expired' sessions are intentionally excluded — the badge should
+// only appear while the session is genuinely live.
+const getLiveReportIds = asyncHandler(async (_req, res) => {
+  const LiveLocationSession = require('../models/LiveLocationSession');
+
+  const sessions = await LiveLocationSession
+    .find(
+      {
+        status:    'active',
+        expiresAt: { $gt: new Date() },
+      },
+      { emergencyReport: 1, _id: 0 }   // project only the foreign key
+    )
+    .lean();
+
+  const ids = sessions.map((s) => String(s.emergencyReport));
+  res.status(200).json({ liveReportIds: ids });
+});
+
+
 // ─── @desc    Look up emergency telephone numbers for a country (public)
 // ─── @route   GET /api/emergency-reports/emergency-number?country=XX
 // ─── @access  Public — no auth required (call before login is possible)
@@ -606,4 +679,5 @@ module.exports = {
   updateReportStatus,
   getEmergencyNumber,
   getEmergencyStats,
+  getLiveReportIds,
 };
