@@ -147,7 +147,7 @@ This feature is designed around privacy and safety: live location data is not pu
 
 The landing page introduces CivicFix and provides quick access to issue reporting and community issue browsing.
 
-![CivicFix Homepage](./screenshots/homepage.jpg)
+![CivicFix Homepage](./screenshots/homepage.png)
 
 ---
 
@@ -155,7 +155,7 @@ The landing page introduces CivicFix and provides quick access to issue reportin
 
 Residents and visitors can browse publicly reported community issues, search for specific problems, and filter reports by category or status.
 
-![Community Issues](./screenshots/community-issues.jpg)
+![Community Issues](./screenshots/community-issues.png)
 
 ---
 
@@ -163,7 +163,7 @@ Residents and visitors can browse publicly reported community issues, search for
 
 Authenticated residents can submit detailed reports by providing an issue title, description, category, severity, and location.
 
-![Report an Issue](./screenshots/report-issue.jpg)
+![Report an Issue](./screenshots/report-issue.png)
 
 ---
 
@@ -171,7 +171,7 @@ Authenticated residents can submit detailed reports by providing an issue title,
 
 Residents can monitor their submitted reports and track the status of ongoing and resolved issues.
 
-![Resident Dashboard](./screenshots/resident-dashboard.jpg)
+![Resident Dashboard](./screenshots/resident-dashboard.png)
 
 ---
 
@@ -179,7 +179,7 @@ Residents can monitor their submitted reports and track the status of ongoing an
 
 Administrators have access to platform-wide statistics, issue management tools, user management, categories, analytics, and emergency reports.
 
-![Administrator Dashboard](./screenshots/admin-dashboard.jpg)
+![Administrator Dashboard](./screenshots/admin-dashboard.png)
 
 ---
 
@@ -187,7 +187,7 @@ Administrators have access to platform-wide statistics, issue management tools, 
 
 Staff members can view assigned issues, prioritize urgent reports, and manage their workload.
 
-![Staff Dashboard](./screenshots/staff-dashboard.jpg)
+![Staff Dashboard](./screenshots/staff-dashboard.png)
 
 ---
 
@@ -195,7 +195,7 @@ Staff members can view assigned issues, prioritize urgent reports, and manage th
 
 During a personal-safety emergency, residents can activate live location sharing so authorized administrators can monitor their current position and movement history.
 
-![Live Location Sharing](./screenshots/live-location-sharing.jpg)
+![Live Location Sharing](./screenshots/live-location-sharing.png)
 
 ---
 
@@ -203,7 +203,7 @@ During a personal-safety emergency, residents can activate live location sharing
 
 CivicFix includes a dedicated private emergency reporting system that prominently encourages users to contact emergency services when they are in immediate danger.
 
-![Emergency Reporting](./screenshots/emergency-report.jpg)
+![Emergency Reporting](./screenshots/emergency-report.png)
 
 ---
 
