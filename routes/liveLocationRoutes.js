@@ -7,6 +7,7 @@ const {
   startSession,
   addLocationPing,
   endSession,
+  extendSession,
   getSessionById,
   getActiveSessionForReport,
   addSessionNote,
@@ -54,6 +55,14 @@ router.post('/:id/ping', protect, addLocationPing);
 //   No body required.
 //   Either the session's reporter or an admin can call this.
 router.post('/:id/end', protect, endSession);
+
+// PATCH /:id/extend
+//   Body: { additionalMinutes: number }
+//   Pushes the expiresAt of an active session forward without ending it.
+//   The same session, location trail, and admin view are preserved — no new
+//   EmergencyReport is created and no admin notification fires.
+//   Owner-only check is enforced in the controller.
+router.patch('/:id/extend', protect, extendSession);
 
 // PATCH /:id/note
 //   Body: { note: string }

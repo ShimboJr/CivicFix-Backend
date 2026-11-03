@@ -362,7 +362,83 @@ const getActiveSessionForReport = async (req, res) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  addSessionNote
+//  extendSession
+//  PATCH /api/live-location/:id/extend
+//  Access: protected — session owner only
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Extends an active session's expiry window in-place by advancing expiresAt.
+ *
+ * This is the correct way to add time to an existing session.  It preserves:
+ *   - The same session _id (the background location task keeps pinging without
+ *     any change to SecureStore)
+ *   - The same EmergencyReport (admins stay on the same detail page)
+ *   - The complete locationTrail accumulated so far
+ *   - All admin messages sent during the session
+ *
+ * Crucially, it does NOT fire notifyAdminsEmergency — admins are already
+ * monitoring the situation and must NOT receive a second urgent alert just
+ * because the resident needed more time.
+ *
+ * The new expiresAt is computed by adding additionalMinutes to the session's
+ * CURRENT expiresAt (not to "now"), so consecutive extensions stack correctly
+ * even if the resident clicks quickly.
+ *
+ * Body:
+ *   { additionalMinutes: number }  — must be a positive finite number
+ */
+const extendSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { additionalMinutes } = req.body;
+
+    const minutes = Number(additionalMinutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      return res.status(400).json({ message: 'additionalMinutes must be a positive number' });
+    }
+
+    const session = await LiveLocationSession.findById(id);
+    if (!session) {
+      return res.status(404).json({ message: 'Live location session not found' });
+    }
+
+    // Ownership: only the resident who started the session can extend it
+    if (session.reporter.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        message: 'Not authorised — only the session owner can extend this session',
+      });
+    }
+
+    // Guard: cannot extend an already-ended or expired session
+    if (session.status !== 'active') {
+      return res.status(410).json({
+        message: `Session is '${session.status}' — only active sessions can be extended`,
+      });
+    }
+
+    // Lazy expiry: if the clock has already passed expiresAt, flip to expired
+    // and reject — the client should start a fresh session instead.
+    const expired = await lazyExpireIfNeeded(session);
+    if (expired) {
+      return res.status(410).json({
+        message: 'Session has just expired — please start a new session',
+      });
+    }
+
+    // Advance expiresAt from its current value so consecutive extensions stack.
+    session.expiresAt = new Date(session.expiresAt.getTime() + minutes * 60 * 1000);
+    await session.save();
+
+    return res.status(200).json({
+      message:      'Session extended',
+      newExpiresAt: session.expiresAt,
+    });
+  } catch (err) {
+    console.error('[liveLocation] extendSession error:', err.message);
+    res.status(500).json({ message: 'Server error extending live location session' });
+  }
+};
+
 //  PATCH /api/live-location/:id/note
 //  Access: protected — session owner only
 // ══════════════════════════════════════════════════════════════════════════════
@@ -615,6 +691,7 @@ module.exports = {
   startSession,
   addLocationPing,
   endSession,
+  extendSession,
   getSessionById,
   getActiveSessionForReport,
   addSessionNote,
